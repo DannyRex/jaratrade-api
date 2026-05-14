@@ -50,9 +50,12 @@ def upgrade() -> None:
         batch_op.create_index(batch_op.f('ix_disputes_order_id'), ['order_id'], unique=False)
         batch_op.create_index(batch_op.f('ix_disputes_status'), ['status'], unique=False)
 
+    # NOT NULL columns on existing tables need a server_default so Postgres can
+    # backfill the existing rows in the same DDL statement. Without it Postgres
+    # raises NotNullViolation ("contains null values") on the very first ALTER.
     with op.batch_alter_table('products', schema=None) as batch_op:
-        batch_op.add_column(sa.Column('stock_quantity', sa.Integer(), nullable=False))
-        batch_op.add_column(sa.Column('low_stock_threshold', sa.Integer(), nullable=False))
+        batch_op.add_column(sa.Column('stock_quantity', sa.Integer(), nullable=False, server_default='0'))
+        batch_op.add_column(sa.Column('low_stock_threshold', sa.Integer(), nullable=False, server_default='10'))
         batch_op.add_column(sa.Column('last_inventory_update_at', sa.DateTime(), nullable=True))
 
     with op.batch_alter_table('subscriptions', schema=None) as batch_op:
@@ -60,7 +63,7 @@ def upgrade() -> None:
         batch_op.add_column(sa.Column('flw_card_last4', sa.String(length=8), nullable=True))
         batch_op.add_column(sa.Column('flw_card_brand', sa.String(length=40), nullable=True))
         batch_op.add_column(sa.Column('last_renewal_attempt_at', sa.DateTime(), nullable=True))
-        batch_op.add_column(sa.Column('renewal_failure_count', sa.Integer(), nullable=False))
+        batch_op.add_column(sa.Column('renewal_failure_count', sa.Integer(), nullable=False, server_default='0'))
 
     # ### end Alembic commands ###
 
