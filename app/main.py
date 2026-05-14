@@ -48,7 +48,14 @@ def _apply_migrations() -> None:
 async def lifespan(app: FastAPI):
     _apply_migrations()
     with SessionLocal() as db:
-        seed_default_data(db)
+        try:
+            seed_default_data(db)
+        except Exception as e:
+            # When uvicorn runs with multiple workers, both will race to seed.
+            # The losing worker hits a UniqueViolation — fine, the data's already
+            # there from the winning worker. Log and move on.
+            db.rollback()
+            print(f"[seed] skipped ({e.__class__.__name__}); another worker probably won the race")
     yield
 
 
