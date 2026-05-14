@@ -44,10 +44,22 @@ def build_inline_config(*, tx_ref: str, amount: float, currency: str, customer: 
 
 
 async def verify_payment(tx_ref: str) -> Dict[str, Any]:
-    """Look up a transaction by tx_ref. Returns Flutterwave's data block."""
+    """Look up a transaction by tx_ref. Returns Flutterwave's data block.
+
+    The Flutterwave data block includes a `card` object with `token` when the
+    payment was a card transaction — we capture it on the subscription record
+    for tokenized auto-recharge on renewal.
+    """
     if not settings.flw_secret_key:
         # Dev fallback: pretend it succeeded so the full flow can be exercised locally.
-        return {"status": "successful", "tx_ref": tx_ref, "amount": 0, "currency": "NGN", "_dev_fallback": True}
+        return {
+            "status": "successful",
+            "tx_ref": tx_ref,
+            "amount": 0,
+            "currency": "NGN",
+            "card": {"token": "DEV-CARD-TOKEN", "last_4digits": "4242", "type": "visa"},
+            "_dev_fallback": True,
+        }
 
     headers = {"Authorization": f"Bearer {settings.flw_secret_key}"}
     async with httpx.AsyncClient(timeout=15.0, headers=headers) as client:
@@ -58,3 +70,66 @@ async def verify_payment(tx_ref: str) -> Dict[str, Any]:
         resp.raise_for_status()
         body = resp.json()
         return body.get("data") or {}
+
+
+async def tokenized_charge(
+    *,
+    token: str,
+    amount: float,
+    currency: str,
+    tx_ref: str,
+    email: str,
+    customer_name: str,
+) -> Dict[str, Any]:
+    """Charge a stored card token. Used by the subscription renewal cron so
+    the user doesn't have to re-enter their card every period.
+
+    Returns Flutterwave's `data` block, or a dev-stub when no secret is set.
+    """
+    if not settings.flw_secret_key:
+        return {
+            "status": "successful",
+            "tx_ref": tx_ref,
+            "amount": amount,
+            "currency": currency,
+            "_dev_fallback": True,
+        }
+
+    headers = {"Authorization": f"Bearer {settings.flw_secret_key}"}
+    payload = {
+        "token": token,
+        "currency": currency,
+        "country": "NG",
+        "amount": float(amount),
+        "email": email,
+        "tx_ref": tx_ref,
+        "fullname": customer_name or email,
+    }
+    async with httpx.AsyncClient(timeout=20.0, headers=headers) as client:
+        resp = await client.post("https://api.flutterwave.com/v3/tokenized-charges", json=payload)
+        resp.raise_for_status()
+        body = resp.json()
+        return body.get("data") or {"status": "failed", "raw": body}
+
+
+async def refund_payment(*, flw_transaction_id: str, amount: Optional[float] = None) -> Dict[str, Any]:
+    """Issue a (full or partial) refund on a previously-successful charge.
+
+    `flw_transaction_id` is Flutterwave's numeric ID (returned in the verify
+    response under `data.id`), not our `tx_ref`. Pass `amount=None` for full
+    refund.
+    """
+    if not settings.flw_secret_key:
+        return {"status": "completed", "amount": amount, "_dev_fallback": True}
+
+    headers = {"Authorization": f"Bearer {settings.flw_secret_key}"}
+    body: Dict[str, Any] = {}
+    if amount is not None:
+        body["amount"] = float(amount)
+    async with httpx.AsyncClient(timeout=20.0, headers=headers) as client:
+        resp = await client.post(
+            f"https://api.flutterwave.com/v3/transactions/{flw_transaction_id}/refund",
+            json=body,
+        )
+        resp.raise_for_status()
+        return resp.json().get("data") or {}

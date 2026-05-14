@@ -176,6 +176,7 @@ from .routers import (  # noqa: E402
     admin_users,
     two_factor,
     subscriptions,
+    disputes,
     settings_router,
     bank_router,
     logs,
@@ -190,6 +191,8 @@ app.include_router(admin.router)
 app.include_router(admin_users.router)
 app.include_router(subscriptions.importer_router)
 app.include_router(subscriptions.exporter_router)
+app.include_router(disputes.importer_router)
+app.include_router(disputes.admin_router)
 app.include_router(settings_router.router)
 app.include_router(bank_router.router)
 app.include_router(logs.router)

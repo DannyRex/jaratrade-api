@@ -12,7 +12,21 @@ def _premium_plan_id(client):
     return next(p["id"] for p in plans if float(p["monthly_subscription_fee"]) > 0)
 
 
+def _reset_importer_to_free_tier():
+    """Some tests upgrade the demo importer to Premium. For tests that need a
+    clean 'fresh user' state, blow that away."""
+    with SessionLocal() as db:
+        user = db.query(User).filter(User.email == "importer@jaratrade.com").first()
+        free = db.query(ImporterPlan).filter(ImporterPlan.is_default == 1).first()
+        db.query(Subscription).filter(Subscription.user_id == user.id).delete()
+        user.plan_id = free.id if free else None
+        user.plan_renewal_date = None
+        user.plan_auto_renew = True
+        db.commit()
+
+
 def test_get_current_starts_on_free_tier(client, importer_token):
+    _reset_importer_to_free_tier()
     r = client.get("/imp/subscription", headers={"Authorization": f"Bearer {importer_token}"})
     assert r.status_code == 200
     p = r.json()["payload"]

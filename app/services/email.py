@@ -267,6 +267,64 @@ def t_subscription_expired(name: str, plan_title: str) -> tuple[str, str]:
     return subject, _wrap(body)
 
 
+def t_subscription_renewed(name: str, plan_title: str, amount: str, period_end: str, last4: str) -> tuple[str, str]:
+    subject = f"Subscription renewed - {plan_title}"
+    body = f"""<p>Hello {name or 'there'},</p>
+    <p>Your <strong>{plan_title}</strong> subscription was renewed for <strong>{amount}</strong>.</p>
+    <p>We charged the card ending in <strong>{last4 or 'on file'}</strong>. You're set until <strong>{period_end}</strong>.</p>"""
+    return subject, _wrap(body)
+
+
+def t_subscription_renewal_failed(name: str, plan_title: str, attempts: int, manage_link: str) -> tuple[str, str]:
+    subject = f"Action needed - couldn't renew your {plan_title} subscription"
+    body = f"""<p>Hello {name or 'there'},</p>
+    <p>We tried to renew your <strong>{plan_title}</strong> subscription but the charge failed (attempt {attempts}).</p>
+    <p>Update your payment method to keep premium access:</p>
+    <p><a href="{manage_link}" style="display:inline-block;background:#2563eb;color:white;padding:10px 18px;border-radius:6px;text-decoration:none">Update card</a></p>
+    <p>If we can't process the renewal after three attempts, your account will move to the free tier.</p>"""
+    return subject, _wrap(body)
+
+
+def t_inventory_stale_reminder(name: str, count: int, manage_link: str) -> tuple[str, str]:
+    subject = "Confirm your stock - keep search ranking"
+    body = f"""<p>Hello {name or 'there'},</p>
+    <p>You have <strong>{count}</strong> product{'s' if count != 1 else ''} that haven't been updated in over a week.</p>
+    <p>Confirm stock (or update prices) to stay prioritised in search results:</p>
+    <p><a href="{manage_link}" style="display:inline-block;background:#2563eb;color:white;padding:10px 18px;border-radius:6px;text-decoration:none">Review products</a></p>"""
+    return subject, _wrap(body)
+
+
+def t_dispute_raised_buyer(name: str, order_no: str, reason: str) -> tuple[str, str]:
+    subject = f"Dispute received for order {order_no}"
+    body = f"""<p>Hello {name or 'there'},</p>
+    <p>We've received your dispute on order <strong>{order_no}</strong>.</p>
+    <p><strong>Reason:</strong> {reason}</p>
+    <p>Our support team will review within 24 hours and email you with next steps.</p>"""
+    return subject, _wrap(body)
+
+
+def t_dispute_raised_seller(name: str, order_no: str, importer_name: str, reason: str) -> tuple[str, str]:
+    subject = f"Dispute filed on order {order_no}"
+    body = f"""<p>Hello {name or 'there'},</p>
+    <p>{importer_name} has raised a dispute on order <strong>{order_no}</strong>.</p>
+    <p><strong>Reason:</strong> {reason}</p>
+    <p>Our team is investigating and will be in touch if we need anything from you.</p>"""
+    return subject, _wrap(body)
+
+
+def t_dispute_resolved_buyer(name: str, order_no: str, resolution: str, amount: str = "") -> tuple[str, str]:
+    nice = {
+        "refund": f"We've issued a refund of <strong>{amount}</strong> to your original payment method. It may take 3-7 business days to appear.",
+        "replacement": "A replacement shipment is being arranged. You'll receive tracking details once the exporter dispatches.",
+        "dismissed": "After review, we weren't able to grant a refund or replacement on this dispute.",
+    }.get(resolution, f"Resolution: {resolution}.")
+    subject = f"Dispute resolved for order {order_no}"
+    body = f"""<p>Hello {name or 'there'},</p>
+    <p>Your dispute on order <strong>{order_no}</strong> has been resolved.</p>
+    <p>{nice}</p>"""
+    return subject, _wrap(body)
+
+
 # ───────────────────────── Legacy aliases (backward-compat) ─────────────────────────
 
 def verification_email(name: str, link: str) -> str:

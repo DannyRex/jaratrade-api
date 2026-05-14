@@ -218,18 +218,74 @@ def update_product(
     price: Optional[float] = Form(default=None, gt=0),
     min_order_quantity: Optional[int] = Form(default=None, ge=1),
     max_order_quantity: Optional[int] = Form(default=None, ge=0),
+    stock_quantity: Optional[int] = Form(default=None, ge=0),
+    low_stock_threshold: Optional[int] = Form(default=None, ge=0),
     status: Optional[int] = Form(default=None, ge=0, le=1),
 ):
+    from datetime import datetime as _dt, timezone as _tz
+
     prod = db.get(Product, product_id)
     if not prod or prod.exporter_id != user.id:
         raise fail("Product not found", code=404)
-    for k, v in {"product_name": product_name, "description": description, "price": price,
-                 "min_order_quantity": min_order_quantity, "max_order_quantity": max_order_quantity,
-                 "status": status}.items():
+    fields = {
+        "product_name": product_name,
+        "description": description,
+        "price": price,
+        "min_order_quantity": min_order_quantity,
+        "max_order_quantity": max_order_quantity,
+        "stock_quantity": stock_quantity,
+        "low_stock_threshold": low_stock_threshold,
+        "status": status,
+    }
+    for k, v in fields.items():
         if v is not None:
             setattr(prod, k, v)
+    # Any update to stock or price counts as an inventory refresh — bumps search ranking.
+    if stock_quantity is not None or price is not None:
+        prod.last_inventory_update_at = _dt.now(_tz.utc).replace(tzinfo=None)
     db.commit()
     return success({"updated": True})
+
+
+@router.post("/product/{product_id}/confirm-inventory")
+def confirm_inventory(
+    product_id: str,
+    stock_quantity: Optional[int] = Form(default=None, ge=0),
+    user: User = Depends(require_exporter),
+    db: Session = Depends(get_db),
+):
+    """Mark this product's stock as freshly confirmed.
+
+    Per BRD: exporters must confirm or update inventory at least weekly.
+    Confirmed-fresh products are prioritised in search.
+    """
+    from datetime import datetime as _dt, timezone as _tz
+
+    prod = db.get(Product, product_id)
+    if not prod or prod.exporter_id != user.id:
+        raise fail("Product not found", code=404)
+    if stock_quantity is not None:
+        prod.stock_quantity = stock_quantity
+    prod.last_inventory_update_at = _dt.now(_tz.utc).replace(tzinfo=None)
+    db.commit()
+    return success({"confirmed": True, "stock_quantity": prod.stock_quantity})
+
+
+@router.post("/product/confirm-inventory-all")
+def confirm_inventory_all(
+    user: User = Depends(require_exporter),
+    db: Session = Depends(get_db),
+):
+    """Bulk-confirm every active product's inventory in one click. Doesn't touch
+    stock levels — just refreshes the timestamp."""
+    from datetime import datetime as _dt, timezone as _tz
+
+    now = _dt.now(_tz.utc).replace(tzinfo=None)
+    rows = db.query(Product).filter(Product.exporter_id == user.id, Product.status == 1).all()
+    for p in rows:
+        p.last_inventory_update_at = now
+    db.commit()
+    return success({"confirmed": len(rows)})
 
 
 @router.delete("/product/{product_id}")

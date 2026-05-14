@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+from datetime import datetime, timezone
 
 from sqlalchemy.orm import Session
 
@@ -252,5 +253,8 @@ def _seed_demo_users(db: Session) -> None:
                 max_order_quantity=100,
                 properties=json.dumps({"weight": "50kg"}),
                 is_featured=1,
+                stock_quantity=80,
+                low_stock_threshold=15,
+                last_inventory_update_at=datetime.now(timezone.utc).replace(tzinfo=None),
                 status=1,
             ))

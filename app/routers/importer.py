@@ -319,6 +319,18 @@ def create_order(
     if not cart.items:
         raise fail("Cart is empty")
 
+    # Pre-flight: check stock for every item before doing any state changes.
+    insufficient = []
+    for item in cart.items:
+        prod = db.get(Product, item.product_id)
+        if prod is None or prod.status != 1:
+            insufficient.append(f"{item.product_id}: no longer available")
+            continue
+        if prod.stock_quantity > 0 and item.quantity > prod.stock_quantity:
+            insufficient.append(f"{prod.product_name}: only {prod.stock_quantity} in stock (you wanted {item.quantity})")
+    if insufficient:
+        raise fail("Stock check failed: " + "; ".join(insufficient), code=409)
+
     try:
         delivery = json.loads(delivery_info)
     except (TypeError, ValueError):
@@ -363,6 +375,9 @@ def create_order(
             unit_price=item.unit_price,
             subtotal=item.subtotal,
         ))
+        # Decrement stock at order-creation time. Refunds/cancellations restore it.
+        if prod and prod.stock_quantity > 0:
+            prod.stock_quantity = max(0, prod.stock_quantity - item.quantity)
 
     cart.status = "ordered"
     db.commit()
@@ -415,6 +430,11 @@ def cancel_order(order_id: str, user: User = Depends(require_importer), db: Sess
         raise fail("Order not found", code=404)
     if order.status not in ("pending", "paid"):
         raise fail("Order can no longer be cancelled")
+    # Restore stock on items that were decremented at order time
+    for item in order.items:
+        prod = db.get(Product, item.product_id)
+        if prod and prod.stock_quantity is not None:
+            prod.stock_quantity = (prod.stock_quantity or 0) + item.quantity
     order.status = "cancelled"
     db.commit()
     return success({"cancelled": True})

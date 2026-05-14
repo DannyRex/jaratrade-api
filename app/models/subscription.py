@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Optional
 
-from sqlalchemy import DateTime, ForeignKey, Numeric, String, Text
+from sqlalchemy import DateTime, ForeignKey, Integer, Numeric, String, Text
 from sqlalchemy.orm import Mapped, mapped_column
 
 from ..security import new_id
@@ -37,5 +37,14 @@ class Subscription(Base, TimestampMixin):
     tx_ref: Mapped[Optional[str]] = mapped_column(String(80), unique=True, nullable=True, index=True)
     provider: Mapped[str] = mapped_column(String(40), default="flutterwave")
     provider_payload: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+
+    # Tokenized auto-recharge (v2.5): captured from Flutterwave on first verify.
+    # On renewal, the recharge cron calls Flutterwave's `/tokenized-charges`
+    # endpoint with this token rather than asking the user to enter card details again.
+    flw_card_token: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+    flw_card_last4: Mapped[Optional[str]] = mapped_column(String(8), nullable=True)
+    flw_card_brand: Mapped[Optional[str]] = mapped_column(String(40), nullable=True)
+    last_renewal_attempt_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    renewal_failure_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
 
     cancelled_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)

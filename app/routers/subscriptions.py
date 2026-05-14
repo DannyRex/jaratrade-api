@@ -70,6 +70,13 @@ def _serialize_subscription(sub: Subscription, plan_title: Optional[str] = None)
         "tx_ref": sub.tx_ref,
         "cancelled_at": sub.cancelled_at.isoformat() if sub.cancelled_at else None,
         "time_created": sub.time_created.isoformat(),
+        # Surface stored-card metadata (not the token itself) so the UI can show
+        # "Visa •4242" and let the user know auto-renew is wired up.
+        "card_last4": sub.flw_card_last4,
+        "card_brand": sub.flw_card_brand,
+        "has_payment_token": bool(sub.flw_card_token),
+        "renewal_failure_count": sub.renewal_failure_count or 0,
+        "last_renewal_attempt_at": sub.last_renewal_attempt_at.isoformat() if sub.last_renewal_attempt_at else None,
     }
 
 
@@ -151,6 +158,15 @@ async def _verify(db: Session, user: User, tx_ref: str):
     sub.period_start = now
     sub.period_end = now + timedelta(days=SUBSCRIPTION_PERIOD_DAYS)
     sub.provider_payload = json.dumps(flw)
+
+    # Capture card token so the renewal cron can charge again without the user.
+    # Flutterwave returns `card: {token, last_4digits, type, ...}` on card txns.
+    card = (flw or {}).get("card") or {}
+    if isinstance(card, dict) and card.get("token"):
+        sub.flw_card_token = card.get("token")
+        sub.flw_card_last4 = card.get("last_4digits") or card.get("last4")
+        sub.flw_card_brand = card.get("type") or card.get("brand")
+        sub.renewal_failure_count = 0
 
     plan = _get_plan(db, sub.plan_id, sub.plan_role)
     user.plan_id = sub.plan_id

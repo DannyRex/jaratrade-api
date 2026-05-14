@@ -138,15 +138,19 @@ def list_products(
     if store:
         q = q.filter(Product.store_id == store)
     total = q.count()
-    # Always surface sponsored (promote=1) listings before everything else
+    # Ranking signals (highest priority first):
+    #   1. Sponsored listings (promote=1) always lead
+    #   2. Recently-confirmed inventory next (BRD: weekly-fresh stock wins ranking)
+    #   3. Then the user's chosen sort
+    fresh_first = Product.last_inventory_update_at.desc().nulls_last()
     if sort_by == "price_asc":
-        q = q.order_by(desc(Product.promote), Product.price.asc())
+        q = q.order_by(desc(Product.promote), fresh_first, Product.price.asc())
     elif sort_by == "price_desc":
-        q = q.order_by(desc(Product.promote), Product.price.desc())
+        q = q.order_by(desc(Product.promote), fresh_first, Product.price.desc())
     elif sort_by == "popular":
-        q = q.order_by(desc(Product.promote), desc(Product.views))
+        q = q.order_by(desc(Product.promote), fresh_first, desc(Product.views))
     else:
-        q = q.order_by(desc(Product.promote), desc(Product.time_created))
+        q = q.order_by(desc(Product.promote), fresh_first, desc(Product.time_created))
     items = q.offset(p * len_).limit(len_).all()
     rows = [_serialize_product_summary(prod, db) for prod in items]
     return success({"data": rows, "meta": {"paging": {"total": total, "page": p + 1, "len": len_}}})
@@ -338,6 +342,9 @@ def _serialize_product_summary(p: Product, db: Session) -> dict:
         "location": market.location if market else "",
         "is_featured": p.is_featured,
         "promote": p.promote,
+        "stock_quantity": p.stock_quantity,
+        "low_stock_threshold": p.low_stock_threshold,
+        "last_inventory_update_at": p.last_inventory_update_at.isoformat() if p.last_inventory_update_at else None,
         "status": p.status,
     }
 
@@ -367,6 +374,9 @@ def _serialize_product_detail(p: Product, db: Session) -> dict:
         "time_updated": p.time_updated.isoformat() if p.time_updated else None,
         "exporter_id": p.exporter_id,
         "promote": p.promote,
+        "stock_quantity": p.stock_quantity,
+        "low_stock_threshold": p.low_stock_threshold,
+        "last_inventory_update_at": p.last_inventory_update_at.isoformat() if p.last_inventory_update_at else None,
         "name": cat.name if cat else "",  # category name (legacy field)
         "store": store.address if store else "",
         "view_counts": p.views,

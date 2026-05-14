@@ -20,4 +20,5 @@ from .catalog import (  # noqa: F401
 from .product import Store, Product, Cart, CartItem  # noqa: F401
 from .order import Order, OrderItem, Payment, Review  # noqa: F401
 from .subscription import Subscription  # noqa: F401
+from .dispute import Dispute  # noqa: F401
 from .misc import SupportTicket, Setting, NotificationLog  # noqa: F401

@@ -1,8 +1,9 @@
 from __future__ import annotations
 
+from datetime import datetime
 from typing import List, Optional
 
-from sqlalchemy import ForeignKey, Integer, Numeric, String, Text
+from sqlalchemy import DateTime, ForeignKey, Integer, Numeric, String, Text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from ..security import new_id
@@ -46,6 +47,10 @@ class Product(Base, TimestampMixin):
     is_featured: Mapped[int] = mapped_column(Integer, default=0)
     promote: Mapped[int] = mapped_column(Integer, default=0)
     status: Mapped[int] = mapped_column(Integer, default=1, nullable=False)
+    # Inventory (added v2.5)
+    stock_quantity: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    low_stock_threshold: Mapped[int] = mapped_column(Integer, default=10, nullable=False)
+    last_inventory_update_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
 
     exporter: Mapped["User"] = relationship("User", back_populates="products", foreign_keys=[exporter_id])  # type: ignore[name-defined]
     store: Mapped["Store"] = relationship("Store", back_populates="products")
