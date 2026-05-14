@@ -1,0 +1,36 @@
+# One-command local stack: API + Postgres.
+#   docker compose up --build
+# Then point the frontend at http://localhost:8000.
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: jaratrade
+      POSTGRES_PASSWORD: jaratrade
+      POSTGRES_DB: jaratrade
+    ports:
+      - "5433:5432"
+    volumes:
+      - jaratrade-pg:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U jaratrade -d jaratrade"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  api:
+    build: .
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgresql+psycopg://jaratrade:jaratrade@postgres:5432/jaratrade
+      JWT_SECRET: dev-secret-change-me-in-production-please-change-this
+      CORS_ORIGINS: '["http://localhost:3000","http://localhost:3030"]'
+      SITE_URL: http://localhost:3000
+    ports:
+      - "8000:8000"
+
+volumes:
+  jaratrade-pg:

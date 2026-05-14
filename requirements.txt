@@ -1,0 +1,32 @@
+fastapi>=0.115
+uvicorn[standard]>=0.32
+sqlalchemy>=2.0
+pydantic>=2.6
+pydantic-settings>=2.4
+python-multipart>=0.0.9
+python-jose[cryptography]>=3.3
+bcrypt>=4
+cryptography>=42
+httpx>=0.27
+alembic>=1.13
+email-validator>=2.2
+pyotp>=2.9
+qrcode[pil]>=8
+slowapi>=0.1.9
+
+# Observability
+sentry-sdk[fastapi]>=2
+opentelemetry-api>=1.27
+opentelemetry-sdk>=1.27
+opentelemetry-instrumentation-fastapi>=0.48b0
+opentelemetry-instrumentation-sqlalchemy>=0.48b0
+opentelemetry-instrumentation-httpx>=0.48b0
+opentelemetry-instrumentation-logging>=0.48b0
+opentelemetry-exporter-otlp-proto-http>=1.27
+
+# Postgres driver (uncomment for prod). SQLite is bundled with Python for dev.
+# psycopg[binary]>=3.2
+
+# Tests
+pytest>=8
+pytest-asyncio>=1

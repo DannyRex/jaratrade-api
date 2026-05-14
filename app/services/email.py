@@ -1,0 +1,278 @@
+"""Transactional email service with the 12 BRD templates.
+
+Architecture:
+- `send_template(...)` is the single entrypoint. It renders, sends, and writes
+  a `NotificationLog` row for audit + idempotency (via `dedupe_key`).
+- SMTP backend with stdout fallback for dev (no creds = print to console).
+- Templates are pure Python f-strings - swap to Jinja2 if templates grow.
+"""
+from __future__ import annotations
+
+import smtplib
+import traceback
+from email.message import EmailMessage
+from typing import Optional
+
+from sqlalchemy.exc import IntegrityError
+from sqlalchemy.orm import Session
+
+from ..config import get_settings
+from ..models.misc import NotificationLog
+
+settings = get_settings()
+
+
+# ───────────────────────── Transport ─────────────────────────
+
+def _send_via_smtp(*, to: str, subject: str, html: str, text: Optional[str]) -> None:
+    msg = EmailMessage()
+    msg["From"] = settings.smtp_from
+    msg["To"] = to
+    msg["Subject"] = subject
+    msg.set_content(text or "Please use an HTML-capable mail client.")
+    msg.add_alternative(html, subtype="html")
+    with smtplib.SMTP(settings.smtp_host, settings.smtp_port) as smtp:
+        smtp.starttls()
+        smtp.login(settings.smtp_user, settings.smtp_password)
+        smtp.send_message(msg)
+
+
+def send_email(*, to: str, subject: str, html: str, text: Optional[str] = None) -> None:
+    """Low-level send. Prefer `send_template` so logs/idempotency apply."""
+    if not settings.smtp_host or not settings.smtp_user:
+        print(f"\n[EMAIL DEV] to={to}  subject={subject}\n{(text or html)[:600]}\n")
+        return
+    _send_via_smtp(to=to, subject=subject, html=html, text=text)
+
+
+# ───────────────────────── Logging + idempotency ─────────────────────────
+
+def send_template(
+    db: Session,
+    *,
+    template: str,
+    to: str,
+    subject: str,
+    html: str,
+    text: Optional[str] = None,
+    user_id: Optional[str] = None,
+    dedupe_key: Optional[str] = None,
+) -> bool:
+    """Send + log. Returns True on send, False if deduped/failed.
+
+    Pass a stable `dedupe_key` (e.g. `invoice:user_id:2026-05`) to make sends
+    idempotent across retries.
+    """
+    if dedupe_key:
+        existing = db.query(NotificationLog).filter(NotificationLog.dedupe_key == dedupe_key).first()
+        if existing:
+            return False
+
+    log = NotificationLog(
+        user_id=user_id,
+        template=template,
+        channel="email",
+        to_address=to,
+        subject=subject,
+        dedupe_key=dedupe_key,
+        success=True,
+    )
+    try:
+        send_email(to=to, subject=subject, html=html, text=text)
+    except Exception:  # noqa: BLE001
+        log.success = False
+        log.error = traceback.format_exc()[:2000]
+
+    db.add(log)
+    try:
+        db.commit()
+    except IntegrityError:
+        # Another concurrent send beat us to the dedupe key.
+        db.rollback()
+        return False
+    return log.success
+
+
+# ───────────────────────── Template helpers ─────────────────────────
+# Each function returns (subject, html). All copy adapted from the BRD.
+
+def _wrap(body: str) -> str:
+    return f"""<!doctype html><html><body style="font-family:system-ui,Arial,sans-serif;color:#1a1a1a;max-width:560px;margin:auto;padding:24px;line-height:1.6">{body}<hr style="margin:32px 0;border:none;border-top:1px solid #e5e7eb"><p style="font-size:12px;color:#6b7280">Jaratrade Ltd · Lagos & London</p></body></html>"""
+
+
+def t_welcome_verify(name: str, verify_link: str) -> tuple[str, str]:
+    subject = "Welcome to Jaratrade! Please verify your email"
+    body = f"""<p>Hello {name or 'there'},</p>
+    <p>Thank you for registering with Jaratrade! To complete your registration, please verify your email by clicking the link below:</p>
+    <p><a href="{verify_link}" style="display:inline-block;background:#2563eb;color:white;padding:10px 18px;border-radius:6px;text-decoration:none">Verify my email</a></p>
+    <p>If you didn't sign up, you can safely ignore this message.</p>
+    <p>Best regards,<br>The Jaratrade Team</p>"""
+    return subject, _wrap(body)
+
+
+def t_account_under_review(name: str) -> tuple[str, str]:
+    subject = "Your Jaratrade account is under review"
+    body = f"""<p>Hello {name or 'there'},</p>
+    <p>Thank you for registering your business with Jaratrade. Your account is currently under review for verification. We'll notify you once it's been activated.</p>
+    <p>This usually takes 1-2 business days.</p>
+    <p>Best regards,<br>The Jaratrade Team</p>"""
+    return subject, _wrap(body)
+
+
+def t_account_activated(name: str, login_link: str) -> tuple[str, str]:
+    subject = "Your Jaratrade account is now active!"
+    body = f"""<p>Hello {name or 'there'},</p>
+    <p>Congratulations! Your Jaratrade account has been successfully activated. You can now start trading.</p>
+    <p><a href="{login_link}" style="display:inline-block;background:#2563eb;color:white;padding:10px 18px;border-radius:6px;text-decoration:none">Log in</a></p>
+    <p>Best regards,<br>The Jaratrade Team</p>"""
+    return subject, _wrap(body)
+
+
+def t_account_rejected(name: str, reason: str) -> tuple[str, str]:
+    subject = "An update on your Jaratrade application"
+    body = f"""<p>Hello {name or 'there'},</p>
+    <p>Thank you for applying to Jaratrade. Unfortunately we weren't able to approve your account at this time:</p>
+    <blockquote style="border-left:3px solid #d1d5db;padding-left:12px;color:#4b5563">{reason}</blockquote>
+    <p>You can update your details and re-apply, or reach out to support if you'd like to discuss.</p>
+    <p>Best regards,<br>The Jaratrade Team</p>"""
+    return subject, _wrap(body)
+
+
+def t_password_reset(name: str, reset_link: str) -> tuple[str, str]:
+    subject = "Reset your Jaratrade password"
+    body = f"""<p>Hello {name or 'there'},</p>
+    <p>You requested to reset your password. Click the link below to choose a new one:</p>
+    <p><a href="{reset_link}" style="display:inline-block;background:#2563eb;color:white;padding:10px 18px;border-radius:6px;text-decoration:none">Reset password</a></p>
+    <p>This link expires in 30 minutes. If you didn't request this, ignore this email.</p>"""
+    return subject, _wrap(body)
+
+
+def t_order_placed_buyer(name: str, order_no: str, total: str, link: str) -> tuple[str, str]:
+    subject = f"Order confirmation - {order_no}"
+    body = f"""<p>Hello {name or 'there'},</p>
+    <p>Thank you for your order! Here are the details:</p>
+    <p><strong>Order number:</strong> {order_no}<br>
+    <strong>Total:</strong> {total}</p>
+    <p><a href="{link}">Track your order</a></p>
+    <p>Next steps: we'll notify the exporter to confirm and prepare your shipment.</p>"""
+    return subject, _wrap(body)
+
+
+def t_order_received_seller(name: str, order_no: str, importer_name: str, total: str, link: str) -> tuple[str, str]:
+    subject = f"New order received - {order_no}"
+    body = f"""<p>Hello {name or 'there'},</p>
+    <p>You've received a new order from <strong>{importer_name}</strong>.</p>
+    <p><strong>Order number:</strong> {order_no}<br>
+    <strong>Total:</strong> {total}</p>
+    <p><a href="{link}">View order</a></p>
+    <p>Please confirm and prepare for shipment.</p>"""
+    return subject, _wrap(body)
+
+
+def t_order_status_update(name: str, order_no: str, status: str, extra: str = "") -> tuple[str, str]:
+    nice = {
+        "paid": "Your payment has been confirmed.",
+        "shipped": "Your order has been shipped.",
+        "delivered": "Your order has been delivered.",
+        "cancelled": "Your order has been cancelled.",
+    }.get(status, f"Your order status changed to {status}.")
+    subject = f"Order {order_no} - {status}"
+    body = f"""<p>Hello {name or 'there'},</p>
+    <p>{nice}</p>
+    {f'<p>{extra}</p>' if extra else ''}
+    <p><strong>Order number:</strong> {order_no}</p>"""
+    return subject, _wrap(body)
+
+
+def t_payment_invoice(name: str, order_no: str, total: str, paid_on: str) -> tuple[str, str]:
+    subject = f"Payment receipt - {order_no}"
+    body = f"""<p>Hello {name or 'there'},</p>
+    <p>Thank you for your payment. Here is your receipt:</p>
+    <table style="border-collapse:collapse;margin-top:8px">
+      <tr><td style="padding:6px 12px;border:1px solid #e5e7eb">Order</td><td style="padding:6px 12px;border:1px solid #e5e7eb">{order_no}</td></tr>
+      <tr><td style="padding:6px 12px;border:1px solid #e5e7eb">Total</td><td style="padding:6px 12px;border:1px solid #e5e7eb">{total}</td></tr>
+      <tr><td style="padding:6px 12px;border:1px solid #e5e7eb">Paid on</td><td style="padding:6px 12px;border:1px solid #e5e7eb">{paid_on}</td></tr>
+    </table>"""
+    return subject, _wrap(body)
+
+
+def t_transaction_limit_warning(name: str, percent_used: int, plan_name: str) -> tuple[str, str]:
+    subject = "You're approaching your free-plan limit"
+    body = f"""<p>Hello {name or 'there'},</p>
+    <p>You've used <strong>{percent_used}%</strong> of your {plan_name} monthly transaction limit.</p>
+    <p>Consider upgrading to Premium for unlimited transactions and priority support.</p>"""
+    return subject, _wrap(body)
+
+
+def t_review_prompt(name: str, exporter_name: str, link: str) -> tuple[str, str]:
+    subject = "Tell us about your experience"
+    body = f"""<p>Hello {name or 'there'},</p>
+    <p>We hope your recent order from {exporter_name} met your expectations. Could you take a moment to leave a rating and review?</p>
+    <p><a href="{link}" style="display:inline-block;background:#2563eb;color:white;padding:10px 18px;border-radius:6px;text-decoration:none">Leave a review</a></p>"""
+    return subject, _wrap(body)
+
+
+def t_review_received(name: str, link: str) -> tuple[str, str]:
+    subject = "You've received new feedback"
+    body = f"""<p>Hello {name or 'there'},</p>
+    <p>You've received new feedback on a recent order. <a href="{link}">View it here</a>.</p>"""
+    return subject, _wrap(body)
+
+
+def t_account_updated(name: str, what: str) -> tuple[str, str]:
+    subject = "Your Jaratrade account was updated"
+    body = f"""<p>Hello {name or 'there'},</p>
+    <p>For your security, we're letting you know your <strong>{what}</strong> was updated.</p>
+    <p>If this wasn't you, please contact support immediately.</p>"""
+    return subject, _wrap(body)
+
+
+def t_2fa_enabled(name: str) -> tuple[str, str]:
+    subject = "Two-factor authentication enabled"
+    body = f"""<p>Hello {name or 'there'},</p>
+    <p>Two-factor authentication has been enabled on your Jaratrade account. From now on, you'll need a code from your authenticator app to log in.</p>
+    <p>If you didn't enable this, contact support immediately.</p>"""
+    return subject, _wrap(body)
+
+
+def t_subscription_payment_confirmed(name: str, plan_title: str, amount: str, period_end: str) -> tuple[str, str]:
+    subject = "Subscription payment confirmed"
+    body = f"""<p>Hello {name or 'there'},</p>
+    <p>Your subscription payment of <strong>{amount}</strong> for the <strong>{plan_title}</strong> plan has been processed.</p>
+    <p>You're all set until <strong>{period_end}</strong>.</p>"""
+    return subject, _wrap(body)
+
+
+def t_subscription_renewal_reminder(name: str, plan_title: str, period_end: str) -> tuple[str, str]:
+    subject = "Subscription renewal reminder"
+    body = f"""<p>Hello {name or 'there'},</p>
+    <p>Just a reminder, your <strong>{plan_title}</strong> plan renews on <strong>{period_end}</strong>.</p>
+    <p>If your payment method needs an update, please log in and refresh it.</p>"""
+    return subject, _wrap(body)
+
+
+def t_subscription_cancelled(name: str, plan_title: str, period_end: str) -> tuple[str, str]:
+    subject = "Subscription cancelled"
+    body = f"""<p>Hello {name or 'there'},</p>
+    <p>You've cancelled your <strong>{plan_title}</strong> auto-renewal. You'll keep premium access until <strong>{period_end}</strong>, after which your account will move to the free plan.</p>
+    <p>You can reactivate at any time from your subscription settings.</p>"""
+    return subject, _wrap(body)
+
+
+def t_subscription_expired(name: str, plan_title: str) -> tuple[str, str]:
+    subject = "Your premium plan has expired"
+    body = f"""<p>Hello {name or 'there'},</p>
+    <p>Your <strong>{plan_title}</strong> plan has expired and your account is now on the free tier.</p>
+    <p>You can upgrade again any time from your subscription settings.</p>"""
+    return subject, _wrap(body)
+
+
+# ───────────────────────── Legacy aliases (backward-compat) ─────────────────────────
+
+def verification_email(name: str, link: str) -> str:
+    """Old call-site helper - returns just the HTML."""
+    return t_welcome_verify(name, link)[1]
+
+
+def password_reset_email(name: str, link: str) -> str:
+    return t_password_reset(name, link)[1]
