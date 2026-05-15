@@ -14,7 +14,7 @@ from sqlalchemy.orm import Session
 
 from ..config import get_settings
 from ..database import get_db
-from ..deps import require_admin, require_importer
+from ..deps import require_admin, require_exporter, require_importer
 from ..envelope import fail, success
 from ..models import Dispute, Order, Payment, Product, User
 from ..services.email import (
@@ -124,15 +124,14 @@ def raise_dispute(
 
 @importer_router.get("/disputes")
 def list_disputes(
+    status: Optional[str] = Query(default=None, pattern="^(open|in_review|resolved|rejected)$"),
     user: User = Depends(require_importer),
     db: Session = Depends(get_db),
 ):
-    rows = (
-        db.query(Dispute)
-        .filter(Dispute.importer_id == user.id)
-        .order_by(desc(Dispute.time_created))
-        .all()
-    )
+    q = db.query(Dispute).filter(Dispute.importer_id == user.id)
+    if status:
+        q = q.filter(Dispute.status == status)
+    rows = q.order_by(desc(Dispute.time_created)).all()
     out = []
     for d in rows:
         order = db.get(Order, d.order_id)
@@ -148,6 +147,45 @@ def get_dispute(
 ):
     d = db.get(Dispute, dispute_id)
     if not d or d.importer_id != user.id:
+        raise fail("Dispute not found", code=404)
+    order = db.get(Order, d.order_id)
+    return success(_serialize(d, order))
+
+
+# ───────────────────────── Exporter ─────────────────────────
+#
+# Sellers need to know when buyers file complaints against them, even though
+# they don't drive the resolution (admin does). Read-only views for their own
+# disputes only.
+
+exporter_router = APIRouter(prefix="/exp", tags=["exporter-disputes"])
+
+
+@exporter_router.get("/disputes")
+def list_disputes_exporter(
+    status: Optional[str] = Query(default=None, pattern="^(open|in_review|resolved|rejected)$"),
+    user: User = Depends(require_exporter),
+    db: Session = Depends(get_db),
+):
+    q = db.query(Dispute).filter(Dispute.exporter_id == user.id)
+    if status:
+        q = q.filter(Dispute.status == status)
+    rows = q.order_by(desc(Dispute.time_created)).all()
+    out = []
+    for d in rows:
+        order = db.get(Order, d.order_id)
+        out.append(_serialize(d, order))
+    return success({"rows": out, "total_length": len(out), "page": 0, "len": len(out)})
+
+
+@exporter_router.get("/disputes/{dispute_id}")
+def get_dispute_exporter(
+    dispute_id: str,
+    user: User = Depends(require_exporter),
+    db: Session = Depends(get_db),
+):
+    d = db.get(Dispute, dispute_id)
+    if not d or d.exporter_id != user.id:
         raise fail("Dispute not found", code=404)
     order = db.get(Order, d.order_id)
     return success(_serialize(d, order))

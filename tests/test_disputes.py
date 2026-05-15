@@ -111,3 +111,51 @@ def test_admin_queue_filters_by_status(client, admin_token):
     assert r.status_code == 200
     rows = r.json()["payload"]["rows"]
     assert all(d["status"] == "open" for d in rows)
+
+
+def test_importer_disputes_filter_by_status(client, importer_token):
+    """Regression: /imp/disputes was ignoring its ?status= filter and
+    returning all rows. The filter should now scope to the requested status."""
+    order_id = _place_paid_delivered_order(client, importer_token)
+    client.post(f"/imp/order/{order_id}/dispute",
+                headers={"Authorization": f"Bearer {importer_token}"},
+                data={"reason": "damaged", "description": "Boxes were crushed; product unsaleable."})
+
+    r = client.get("/imp/disputes", params={"status": "open"},
+                   headers={"Authorization": f"Bearer {importer_token}"})
+    assert r.status_code == 200
+    open_rows = r.json()["payload"]["rows"]
+    assert len(open_rows) >= 1
+    assert all(d["status"] == "open" for d in open_rows)
+
+    r = client.get("/imp/disputes", params={"status": "resolved"},
+                   headers={"Authorization": f"Bearer {importer_token}"})
+    resolved_rows = r.json()["payload"]["rows"]
+    assert all(d["status"] == "resolved" for d in resolved_rows)
+
+
+def test_exporter_can_see_disputes_filed_against_them(client, importer_token, exporter_token):
+    """v2.5.1: sellers got no visibility into disputes against their orders.
+    /exp/disputes now returns disputes where this exporter is the named party."""
+    order_id = _place_paid_delivered_order(client, importer_token)
+    r = client.post(f"/imp/order/{order_id}/dispute",
+                    headers={"Authorization": f"Bearer {importer_token}"},
+                    data={"reason": "quality", "description": "Quality not as advertised."})
+    assert r.status_code == 200, r.text
+    dispute_id = r.json()["payload"]["id"]
+
+    r = client.get("/exp/disputes", headers={"Authorization": f"Bearer {exporter_token}"})
+    assert r.status_code == 200, r.text
+    rows = r.json()["payload"]["rows"]
+    assert any(d["id"] == dispute_id for d in rows)
+
+    r = client.get(f"/exp/disputes/{dispute_id}", headers={"Authorization": f"Bearer {exporter_token}"})
+    assert r.status_code == 200
+    assert r.json()["payload"]["id"] == dispute_id
+
+
+def test_exporter_disputes_role_gated(client, importer_token):
+    """An importer hitting the exporter dispute endpoint should be rejected
+    by the role guard, not silently see other people's disputes."""
+    r = client.get("/exp/disputes", headers={"Authorization": f"Bearer {importer_token}"})
+    assert r.status_code in (401, 403)
