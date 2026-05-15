@@ -9,6 +9,7 @@ Architecture:
 from __future__ import annotations
 
 import smtplib
+import threading
 import traceback
 from email.message import EmailMessage
 from typing import Optional
@@ -31,18 +32,41 @@ def _send_via_smtp(*, to: str, subject: str, html: str, text: Optional[str]) -> 
     msg["Subject"] = subject
     msg.set_content(text or "Please use an HTML-capable mail client.")
     msg.add_alternative(html, subtype="html")
-    with smtplib.SMTP(settings.smtp_host, settings.smtp_port) as smtp:
+    # 10s timeout — Resend usually responds in <1s; anything more is a hang.
+    with smtplib.SMTP(settings.smtp_host, settings.smtp_port, timeout=10) as smtp:
         smtp.starttls()
         smtp.login(settings.smtp_user, settings.smtp_password)
         smtp.send_message(msg)
 
 
+def _send_via_smtp_quiet(**kwargs) -> None:
+    """Thread target: swallow exceptions (we already logged intent before
+    spawning) to avoid noisy worker tracebacks for transient SMTP blips."""
+    try:
+        _send_via_smtp(**kwargs)
+    except Exception:  # noqa: BLE001
+        # The NotificationLog row was written optimistically as success=True.
+        # Real delivery failures surface in the Resend dashboard; we don't
+        # double-write the log here because the request DB session is gone.
+        traceback.print_exc()
+
+
 def send_email(*, to: str, subject: str, html: str, text: Optional[str] = None) -> None:
-    """Low-level send. Prefer `send_template` so logs/idempotency apply."""
+    """Low-level send. Prefer `send_template` so logs/idempotency apply.
+
+    SMTP runs in a background daemon thread so a 10-second Resend roundtrip
+    doesn't block API responses (POST /imp/order was waiting ~25-45s in
+    prod because it sends two confirmation emails synchronously).
+    """
     if not settings.smtp_host or not settings.smtp_user:
         print(f"\n[EMAIL DEV] to={to}  subject={subject}\n{(text or html)[:600]}\n")
         return
-    _send_via_smtp(to=to, subject=subject, html=html, text=text)
+    threading.Thread(
+        target=_send_via_smtp_quiet,
+        kwargs={"to": to, "subject": subject, "html": html, "text": text},
+        daemon=True,
+        name=f"smtp-{subject[:30]}",
+    ).start()
 
 
 # ───────────────────────── Logging + idempotency ─────────────────────────

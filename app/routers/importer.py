@@ -320,14 +320,20 @@ def create_order(
         raise fail("Cart is empty")
 
     # Pre-flight: check stock for every item before doing any state changes.
+    # v2.5+: every product has stock_quantity NOT NULL, so 0 reliably means
+    # "out of stock". An earlier version of this check guarded `> 0` because
+    # untracked products defaulted to 0 — that's no longer true.
     insufficient = []
     for item in cart.items:
         prod = db.get(Product, item.product_id)
         if prod is None or prod.status != 1:
             insufficient.append(f"{item.product_id}: no longer available")
             continue
-        if prod.stock_quantity > 0 and item.quantity > prod.stock_quantity:
-            insufficient.append(f"{prod.product_name}: only {prod.stock_quantity} in stock (you wanted {item.quantity})")
+        stock = prod.stock_quantity or 0
+        if stock <= 0:
+            insufficient.append(f"{prod.product_name}: out of stock")
+        elif item.quantity > stock:
+            insufficient.append(f"{prod.product_name}: only {stock} in stock (you wanted {item.quantity})")
     if insufficient:
         raise fail("Stock check failed: " + "; ".join(insufficient), code=409)
 
@@ -376,8 +382,9 @@ def create_order(
             subtotal=item.subtotal,
         ))
         # Decrement stock at order-creation time. Refunds/cancellations restore it.
-        if prod and prod.stock_quantity > 0:
-            prod.stock_quantity = max(0, prod.stock_quantity - item.quantity)
+        # Preflight already proved there's enough stock, so this is a straight subtraction.
+        if prod:
+            prod.stock_quantity = max(0, (prod.stock_quantity or 0) - item.quantity)
 
     cart.status = "ordered"
     db.commit()

@@ -82,6 +82,29 @@ def test_order_blocked_when_insufficient_stock(client, importer_token):
     assert "Stock check failed" in r.text
 
 
+def test_order_blocked_when_stock_is_zero(client, importer_token):
+    """Regression: a pre-v2.5 guard `if stock > 0` let zero-stock products
+    slip through the preflight check. With every product having NOT NULL
+    stock, zero must reliably block orders."""
+    _wipe_importer_carts()
+    pid = _first_product_id(client)
+    with SessionLocal() as db:
+        p = db.get(Product, pid)
+        p.stock_quantity = 0
+        db.commit()
+
+    # Seeded products have MOQ=2, so order at least that to clear the cart-side check
+    r = client.post("/imp/cart", headers={"Authorization": f"Bearer {importer_token}"},
+                    data={"product_id": pid, "quantity": 2})
+    assert r.status_code == 200, r.text
+    cart_id = r.json()["payload"]["cart_id"]
+
+    r = client.post("/imp/order", headers={"Authorization": f"Bearer {importer_token}"},
+                    data={"cart_id": cart_id, "delivery_info": "{}"})
+    assert r.status_code == 409, r.text
+    assert "out of stock" in r.text.lower()
+
+
 def test_exporter_can_confirm_inventory(client, exporter_token):
     pid = _first_product_id(client)
     # Make it stale
