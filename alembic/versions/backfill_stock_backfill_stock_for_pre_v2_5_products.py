@@ -21,7 +21,7 @@ depends_on: Union[str, Sequence[str], None] = None
 def upgrade() -> None:
     """Backfill stock for products that pre-date v2.5.
 
-    The previous migration added `stock_quantity INTEGER NOT NULL DEFAULT 0` —
+    The previous migration added `stock_quantity INTEGER NOT NULL DEFAULT 0` -
     correct for new rows, but on prod it zeroed out every existing listing,
     making the whole marketplace appear out-of-stock until each seller hand-
     sets it. Heuristic: any product whose stock is 0 AND whose
@@ -39,5 +39,5 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
-    """Not reversible — we lose the prior zero. No-op."""
+    """Not reversible - we lose the prior zero. No-op."""
     pass

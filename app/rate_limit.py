@@ -1,4 +1,4 @@
-"""Shared slowapi limiter — imported by main.py + any router that uses limits."""
+"""Shared slowapi limiter - imported by main.py + any router that uses limits."""
 from __future__ import annotations
 
 from slowapi import Limiter

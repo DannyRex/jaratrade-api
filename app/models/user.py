@@ -39,7 +39,7 @@ class User(Base, TimestampMixin):
     email_verified: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     status: Mapped[int] = mapped_column(Integer, default=1, nullable=False)
 
-    # 2FA — TOTP secret (RFC 6238). Stored base32-encoded.
+    # 2FA - TOTP secret (RFC 6238). Stored base32-encoded.
     totp_secret: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
     totp_enabled: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
 

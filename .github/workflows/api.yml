@@ -37,7 +37,7 @@ jobs:
           alembic upgrade head
           alembic revision --autogenerate -m "ci_check" --rev-id ci_check
           if grep -q "op\." alembic/versions/ci_check_*.py; then
-            echo "::warning::Schema drift detected — run alembic revision --autogenerate locally"
+            echo "::warning::Schema drift detected - run alembic revision --autogenerate locally"
           fi
           rm -f alembic/versions/ci_check_*.py
 

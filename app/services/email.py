@@ -32,7 +32,7 @@ def _send_via_smtp(*, to: str, subject: str, html: str, text: Optional[str]) -> 
     msg["Subject"] = subject
     msg.set_content(text or "Please use an HTML-capable mail client.")
     msg.add_alternative(html, subtype="html")
-    # 10s timeout — Resend usually responds in <1s; anything more is a hang.
+    # 10s timeout - Resend usually responds in <1s; anything more is a hang.
     with smtplib.SMTP(settings.smtp_host, settings.smtp_port, timeout=10) as smtp:
         smtp.starttls()
         smtp.login(settings.smtp_user, settings.smtp_password)

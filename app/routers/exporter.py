@@ -240,7 +240,7 @@ def update_product(
     for k, v in fields.items():
         if v is not None:
             setattr(prod, k, v)
-    # Any update to stock or price counts as an inventory refresh — bumps search ranking.
+    # Any update to stock or price counts as an inventory refresh - bumps search ranking.
     if stock_quantity is not None or price is not None:
         prod.last_inventory_update_at = _dt.now(_tz.utc).replace(tzinfo=None)
     db.commit()
@@ -277,7 +277,7 @@ def confirm_inventory_all(
     db: Session = Depends(get_db),
 ):
     """Bulk-confirm every active product's inventory in one click. Doesn't touch
-    stock levels — just refreshes the timestamp."""
+    stock levels - just refreshes the timestamp."""
     from datetime import datetime as _dt, timezone as _tz
 
     now = _dt.now(_tz.utc).replace(tzinfo=None)

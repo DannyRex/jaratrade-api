@@ -322,7 +322,7 @@ def create_order(
     # Pre-flight: check stock for every item before doing any state changes.
     # v2.5+: every product has stock_quantity NOT NULL, so 0 reliably means
     # "out of stock". An earlier version of this check guarded `> 0` because
-    # untracked products defaulted to 0 — that's no longer true.
+    # untracked products defaulted to 0 - that's no longer true.
     insufficient = []
     for item in cart.items:
         prod = db.get(Product, item.product_id)

@@ -1,4 +1,4 @@
-"""Alembic environment — wires our app's metadata + DATABASE_URL."""
+"""Alembic environment - wires our app's metadata + DATABASE_URL."""
 from __future__ import annotations
 
 import os
@@ -13,7 +13,7 @@ from sqlalchemy import engine_from_config, pool
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from app.config import get_settings  # noqa: E402
-from app.database import Base, DATABASE_URL  # noqa: E402 — DATABASE_URL is already normalised to psycopg v3
+from app.database import Base, DATABASE_URL  # noqa: E402 - DATABASE_URL is already normalised to psycopg v3
 from app import models  # noqa: F401, E402  (registers all model classes on Base.metadata)
 
 config = context.config

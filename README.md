@@ -115,14 +115,14 @@ Plus 4 demo products on the exporter, 11 markets, 8 banks, 4 logistics partners,
 | **Transaction caps** | `/imp/payment/init` enforces `transaction_limit` from the user's plan (when currencies match). 50%/80% warning emails fire automatically. |
 | **Public reviews** | `GET /public/reviews/exporter/:id` returns paged reviews + rating distribution + average. |
 | **Email service** | All 12 BRD templates wired to events. Idempotent via `dedupe_key`. `NotificationLog` table audits every send. |
-| **Rate limiting** | `slowapi` — 10/min on login, 20/min on payment init. |
+| **Rate limiting** | `slowapi` - 10/min on login, 20/min on payment init. |
 | **Request logging** | Structured access log per request with X-Request-ID propagation. |
 | **Tests** | 22 pytest tests covering auth, public, cart, orders, payments, admin, KYC, 2FA. |
-| **FX conversion** | `services/fx.py` — live rates via open.er-api.com (cached 6h) with hardcoded fallbacks. Used by the transaction-cap check so an NGN order can be measured against a GBP plan limit. |
-| **Sentry** | `sentry-sdk[fastapi]` integration — error tracking + perf traces + SQLAlchemy spans + logging hook. Enabled when `SENTRY_DSN` is set; no-op otherwise. |
+| **FX conversion** | `services/fx.py` - live rates via open.er-api.com (cached 6h) with hardcoded fallbacks. Used by the transaction-cap check so an NGN order can be measured against a GBP plan limit. |
+| **Sentry** | `sentry-sdk[fastapi]` integration - error tracking + perf traces + SQLAlchemy spans + logging hook. Enabled when `SENTRY_DSN` is set; no-op otherwise. |
 | **OpenTelemetry** | Auto-instrumentation of FastAPI + SQLAlchemy + httpx + Python logging. Console exporter in dev, OTLP/HTTP exporter when `OTEL_EXPORTER_OTLP_ENDPOINT` is set. Every span carries the request's `X-Request-ID` (`jaratrade.request_id` attribute) for cross-system correlation. |
 | **Subscription billing** | New `Subscription` table + `/imp\|exp/subscription/{,upgrade,verify,cancel}` endpoints. Upgrade returns a Flutterwave Inline config; verify confirms the payment, sets `period_end = now+30d`, and updates `user.plan_id`. Cancellation stops auto-renewal but keeps premium until `period_end`. |
-| **Renewal cron** | `python -m app.cron expire_subscriptions` and `... renewal_reminders` — idempotent jobs that downgrade lapsed users and email them 3 days before renewal. CLI is one entrypoint; wire to systemd timer / Vercel Cron / Fly schedule. |
+| **Renewal cron** | `python -m app.cron expire_subscriptions` and `... renewal_reminders` - idempotent jobs that downgrade lapsed users and email them 3 days before renewal. CLI is one entrypoint; wire to systemd timer / Vercel Cron / Fly schedule. |
 
 ## Observability
 
@@ -141,8 +141,8 @@ Three modes, picked automatically:
 
 | When | Behaviour |
 |---|---|
-| `ENVIRONMENT=development` and no OTLP endpoint | Console exporter — spans print as JSON to stdout |
-| `OTEL_EXPORTER_OTLP_ENDPOINT=https://...` | OTLP/HTTP exporter — ships to Honeycomb / Tempo / Sentry / Jaeger / etc. |
+| `ENVIRONMENT=development` and no OTLP endpoint | Console exporter - spans print as JSON to stdout |
+| `OTEL_EXPORTER_OTLP_ENDPOINT=https://...` | OTLP/HTTP exporter - ships to Honeycomb / Tempo / Sentry / Jaeger / etc. |
 | `OTEL_CONSOLE_EXPORTER=true` | Force console exporter regardless of env |
 
 Pass auth headers as comma-separated key=value:
@@ -305,7 +305,7 @@ SMTP_FROM=no-reply@jaratrade.com
 
 ### CI
 
-`.github/workflows/api.yml` runs pytest, an import smoke test, and a schema-drift check (autogenerate against current models — flags missing migrations).
+`.github/workflows/api.yml` runs pytest, an import smoke test, and a schema-drift check (autogenerate against current models - flags missing migrations).
 
 ## Key design choices
 

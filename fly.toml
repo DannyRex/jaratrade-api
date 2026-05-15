@@ -1,4 +1,4 @@
-# Fly.io config — `flyctl launch --no-deploy` then `flyctl secrets set ...` then `flyctl deploy`.
+# Fly.io config - `flyctl launch --no-deploy` then `flyctl secrets set ...` then `flyctl deploy`.
 app = "jaratrade-api"
 primary_region = "lhr"
 

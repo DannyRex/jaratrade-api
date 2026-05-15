@@ -15,7 +15,7 @@ from fastapi.responses import JSONResponse
 from .config import get_settings
 from .database import Base, SessionLocal, engine
 from .envelope import success
-from . import observability  # noqa: F401 — initialises Sentry + OTel at import
+from . import observability  # noqa: F401 - initialises Sentry + OTel at import
 from .seed import seed_default_data
 
 settings = get_settings()
@@ -52,7 +52,7 @@ async def lifespan(app: FastAPI):
             seed_default_data(db)
         except Exception as e:
             # When uvicorn runs with multiple workers, both will race to seed.
-            # The losing worker hits a UniqueViolation — fine, the data's already
+            # The losing worker hits a UniqueViolation - fine, the data's already
             # there from the winning worker. Log and move on.
             db.rollback()
             print(f"[seed] skipped ({e.__class__.__name__}); another worker probably won the race")

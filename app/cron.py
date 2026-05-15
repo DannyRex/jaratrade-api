@@ -79,7 +79,7 @@ def expire_subscriptions(db: Session) -> int:
 
 def renewal_reminders(db: Session, days_before: int = 3) -> int:
     """Email users whose plan renews within `days_before` days. Idempotent
-    via the dedupe_key — same user/period only ever gets one reminder.
+    via the dedupe_key - same user/period only ever gets one reminder.
     """
     target = datetime.now(timezone.utc).replace(tzinfo=None) + timedelta(days=days_before)
     rows = (

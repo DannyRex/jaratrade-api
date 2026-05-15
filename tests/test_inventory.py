@@ -39,7 +39,7 @@ def test_order_decrements_stock_and_cancel_restores(client, importer_token, expo
         before = p.stock_quantity
 
     # Add 3 to cart -> create order -> stock should drop by 3.
-    # Use cart_id returned from POST directly (don't read list_carts — it can
+    # Use cart_id returned from POST directly (don't read list_carts - it can
     # include stale "ordered" carts from prior tests).
     r = client.post("/imp/cart", headers={"Authorization": f"Bearer {importer_token}"},
                     data={"product_id": pid, "quantity": 3})

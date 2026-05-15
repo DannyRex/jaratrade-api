@@ -47,7 +47,7 @@ async def verify_payment(tx_ref: str) -> Dict[str, Any]:
     """Look up a transaction by tx_ref. Returns Flutterwave's data block.
 
     The Flutterwave data block includes a `card` object with `token` when the
-    payment was a card transaction — we capture it on the subscription record
+    payment was a card transaction - we capture it on the subscription record
     for tokenized auto-recharge on renewal.
     """
     if not settings.flw_secret_key:

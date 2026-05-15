@@ -3,7 +3,7 @@
 Strategy:
 - A static fallback table (so the API works offline / in tests / when the
   upstream rate provider is down).
-- Optional live lookups against a public FX API (open.er-api.com — no API key
+- Optional live lookups against a public FX API (open.er-api.com - no API key
   required). We cache rates for 6 hours per base currency.
 
 Public surface: just `convert(amount, from_currency, to_currency)`.
@@ -15,7 +15,7 @@ from typing import Dict, Optional
 
 import httpx
 
-# Hardcoded fallbacks — illustrative, not authoritative. Refresh quarterly.
+# Hardcoded fallbacks - illustrative, not authoritative. Refresh quarterly.
 # Rates are: 1 unit of `key` -> N units of GBP.
 _FALLBACK_TO_GBP: Dict[str, float] = {
     "GBP": 1.0,
@@ -52,7 +52,7 @@ def _live_rates(base: str) -> Optional[Dict[str, float]]:
 def convert(amount: float, from_currency: str, to_currency: str) -> Optional[float]:
     """Convert `amount` from one ISO-4217 code to another.
 
-    Returns None if neither live nor fallback rates are available — callers
+    Returns None if neither live nor fallback rates are available - callers
     should treat that as "skip the check" rather than a hard error.
     """
     if amount == 0 or from_currency == to_currency:

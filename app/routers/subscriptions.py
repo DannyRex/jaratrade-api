@@ -1,4 +1,4 @@
-"""Subscription management — upgrade, verify, cancel, fetch current.
+"""Subscription management - upgrade, verify, cancel, fetch current.
 
 Flow (per role):
   1. POST /imp/subscription/upgrade  body: {plan_id}

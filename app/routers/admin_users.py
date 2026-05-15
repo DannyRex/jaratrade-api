@@ -1,7 +1,7 @@
 """Admin users + KYC verification queue.
 
 Closes the documented backend gap (`GET /adm/users`) and adds the KYC review
-flow (list pending exporters, approve, reject — with notification emails).
+flow (list pending exporters, approve, reject - with notification emails).
 """
 from __future__ import annotations
 
