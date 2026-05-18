@@ -27,20 +27,49 @@ def build_inline_config(
     customer: Dict[str, str],
     order_id: str,
     commission_rate: Optional[float] = None,
+    commission_subaccount_id: Optional[str] = None,
+    seller_subaccount_id: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Build the Flutterwave Inline-checkout config.
 
-    ``commission_rate`` is the decimal split (e.g. 0.02 for 2%) routed to the
-    platform's Flutterwave subaccount. Pass ``None`` to fall back to the
-    historic 2% default; new callers should look the rate up via
-    ``settings_router.read_commission_rate(db)`` and pass it in so the
-    admin's configured value drives the split.
+    Three-way split semantics (per Flutterwave's `subaccounts` array):
+      - The seller's subaccount receives (100% - commission)% of the order.
+      - The commission subaccount receives `commission_rate`.
+      - Anything left in the merchant wallet is automatically Jaratrade's.
+
+    If `seller_subaccount_id` is missing we fall back to a single-party
+    split routing only the commission to the platform - which is what
+    payment-flow looked like before subaccount provisioning. That keeps
+    legacy / dev paths functional while we onboard sellers.
+
+    `commission_rate` is the decimal (e.g. 0.02 for 2%). When None we
+    default to 0.02 for backwards compatibility.
     """
+    rate = 0.02 if commission_rate is None else commission_rate
+    commission_id = commission_subaccount_id or settings.flw_commission_subaccount_id
+
+    subaccounts = []
+    # Seller share first (largest); commission second.
+    if seller_subaccount_id:
+        subaccounts.append({
+            "id": seller_subaccount_id,
+            "transaction_split_ratio": round((1.0 - rate) * 100, 4),
+            "transaction_charge_type": "percentage",
+        })
+    if commission_id:
+        subaccounts.append({
+            "id": commission_id,
+            "transaction_split_ratio": round(rate * 100, 4),
+            "transaction_charge_type": "percentage",
+        })
+
+    # Legacy `split` field kept for backwards compat with merchants who
+    # haven't migrated their inline integration. Flutterwave honours both
+    # but `subaccounts` is the newer canonical form.
     split = []
-    if settings.flw_commission_subaccount_id:
-        rate = 0.02 if commission_rate is None else commission_rate
+    if commission_id and not seller_subaccount_id:
         split.append({
-            "id": settings.flw_commission_subaccount_id,
+            "id": commission_id,
             "transaction_charge_type": "percentage",
             "transaction_charge": f"{rate:.4f}",
         })
@@ -57,6 +86,7 @@ def build_inline_config(
             "logo": False,
         },
         "split": split,
+        "subaccounts": subaccounts,
     }
 
 
@@ -127,6 +157,135 @@ async def tokenized_charge(
         resp.raise_for_status()
         body = resp.json()
         return body.get("data") or {"status": "failed", "raw": body}
+
+
+async def resolve_account(*, account_number: str, account_bank: str) -> Dict[str, Any]:
+    """Verify a Nigerian bank account number resolves to a real account name.
+
+    Used before subaccount creation to catch typos / bad account numbers. The
+    Flutterwave endpoint is POST /v3/accounts/resolve. Returns the resolved
+    `account_name` (or raises on failure). Dev-fallback echoes the inputs.
+    """
+    if not settings.flw_secret_key:
+        return {
+            "account_number": account_number,
+            "account_bank": account_bank,
+            "account_name": "DEV ACCOUNT NAME",
+            "_dev_fallback": True,
+        }
+    headers = {"Authorization": f"Bearer {settings.flw_secret_key}"}
+    payload = {"account_number": account_number, "account_bank": account_bank}
+    async with httpx.AsyncClient(timeout=20.0, headers=headers) as client:
+        resp = await client.post("https://api.flutterwave.com/v3/accounts/resolve", json=payload)
+        resp.raise_for_status()
+        body = resp.json()
+        return body.get("data") or {"status": "failed", "raw": body}
+
+
+async def create_subaccount(
+    *,
+    account_bank: str,
+    account_number: str,
+    business_name: str,
+    business_email: str,
+    business_mobile: str,
+    country: str = "NG",
+    split_value: float = 1.0,
+    split_type: str = "percentage",
+) -> Dict[str, Any]:
+    """Provision a Flutterwave subaccount.
+
+    Returns Flutterwave's `data` block; `data.subaccount_id` is the public
+    ID we store on our User row + reference in payment-time splits. The
+    `account_bank` arg is Flutterwave's bank code (e.g. "044" for Access),
+    not our internal Bank UUID - the caller is responsible for the lookup.
+    """
+    if not settings.flw_secret_key:
+        # Dev-fallback: synthesise a plausible-looking subaccount id so the
+        # rest of the flow can be exercised without prod credentials.
+        fake_id = f"RS_DEV_{abs(hash((account_number, business_name))) % 10**8:08d}"
+        return {
+            "subaccount_id": fake_id,
+            "id": 0,
+            "account_number": account_number,
+            "account_bank": account_bank,
+            "business_name": business_name,
+            "split_value": split_value,
+            "split_type": split_type,
+            "country": country,
+            "_dev_fallback": True,
+        }
+
+    headers = {"Authorization": f"Bearer {settings.flw_secret_key}"}
+    payload = {
+        "account_bank": account_bank,
+        "account_number": account_number,
+        "business_name": business_name,
+        "business_email": business_email,
+        "business_mobile": business_mobile,
+        "country": country,
+        "split_value": split_value,
+        "split_type": split_type,
+    }
+    async with httpx.AsyncClient(timeout=20.0, headers=headers) as client:
+        resp = await client.post("https://api.flutterwave.com/v3/subaccounts", json=payload)
+        resp.raise_for_status()
+        body = resp.json()
+        return body.get("data") or {"status": "failed", "raw": body}
+
+
+async def get_subaccount(subaccount_id: str) -> Dict[str, Any]:
+    """Fetch a subaccount by ID. Used to surface status / balance in admin."""
+    if not settings.flw_secret_key:
+        return {"subaccount_id": subaccount_id, "balance": 0, "_dev_fallback": True}
+    headers = {"Authorization": f"Bearer {settings.flw_secret_key}"}
+    async with httpx.AsyncClient(timeout=15.0, headers=headers) as client:
+        resp = await client.get(f"https://api.flutterwave.com/v3/subaccounts/{subaccount_id}")
+        resp.raise_for_status()
+        return resp.json().get("data") or {}
+
+
+async def transfer_to_bank(
+    *,
+    account_bank: str,
+    account_number: str,
+    amount: float,
+    currency: str,
+    narration: str,
+    reference: str,
+    beneficiary_name: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Disburse funds from the Jaratrade Flutterwave wallet directly to a bank
+    account. Used by the manual seller-payout flow as the fallback when split
+    settlement isn't sufficient (e.g. cross-border / GBP payouts to importers'
+    refund destination).
+
+    Returns Flutterwave's `data` block from POST /v3/transfers.
+    """
+    if not settings.flw_secret_key:
+        return {
+            "id": abs(hash(reference)) % 10**9,
+            "reference": reference,
+            "status": "NEW",
+            "amount": amount,
+            "currency": currency,
+            "_dev_fallback": True,
+        }
+    headers = {"Authorization": f"Bearer {settings.flw_secret_key}"}
+    payload: Dict[str, Any] = {
+        "account_bank": account_bank,
+        "account_number": account_number,
+        "amount": float(amount),
+        "currency": currency,
+        "narration": narration[:80],
+        "reference": reference,
+    }
+    if beneficiary_name:
+        payload["beneficiary_name"] = beneficiary_name
+    async with httpx.AsyncClient(timeout=30.0, headers=headers) as client:
+        resp = await client.post("https://api.flutterwave.com/v3/transfers", json=payload)
+        resp.raise_for_status()
+        return resp.json().get("data") or {"status": "failed", "raw": resp.json()}
 
 
 async def refund_payment(*, flw_transaction_id: str, amount: Optional[float] = None) -> Dict[str, Any]:

@@ -17,8 +17,9 @@ from ..constants import ROLE_EXPORTER, ROLE_IMPORTER
 from ..database import get_db
 from ..deps import require_admin
 from ..envelope import fail, success
-from ..models import User, BusinessProfile
+from ..models import Bank, User, BusinessProfile
 from ..services.email import send_template, t_account_activated, t_account_rejected
+from ..services.flutterwave import create_subaccount
 
 router = APIRouter(prefix="/adm", tags=["admin"])
 settings = get_settings()
@@ -50,6 +51,10 @@ def _serialize_user(u: User) -> dict:
         "business_name": biz.business_name if biz else None,
         "business_country": biz.business_country if biz else None,
         "business_reg_number": biz.business_reg_number if biz else None,
+        # FLW subaccount provisioning state - admins use this to spot
+        # exporters who passed KYC but couldn't be provisioned (bad bank
+        # details, etc) so they can be retried manually.
+        "flw_subaccount_id": u.flw_subaccount_id,
         "time_created": u.time_created.isoformat(),
     }
 
@@ -127,12 +132,24 @@ def kyc_queue(
 
 
 @router.post("/kyc/{user_id}/approve")
-def kyc_approve(user_id: str, _: User = Depends(require_admin), db: Session = Depends(get_db)):
+async def kyc_approve(user_id: str, _: User = Depends(require_admin), db: Session = Depends(get_db)):
+    """Approve an exporter's KYC + auto-provision their Flutterwave subaccount.
+
+    The subaccount is the destination Flutterwave routes the seller's share
+    of each order's split into. Approving without provisioning would leave
+    the exporter unable to actually receive funds, so we attempt it inline.
+    Failures don't block approval - admins can retry via POST
+    /adm/users/{id}/reprovision-subaccount.
+    """
+    import json
+    import traceback
+
     u = db.get(User, user_id)
     if not u:
         raise fail("User not found", code=404)
     if u.role != ROLE_EXPORTER:
         raise fail("Only exporter accounts go through KYC", code=400)
+
     u.kyc_status = "approved"
     u.kyc_reviewed_at = datetime.now(timezone.utc)
     u.kyc_rejection_reason = None
@@ -140,6 +157,32 @@ def kyc_approve(user_id: str, _: User = Depends(require_admin), db: Session = De
     u.email_verified = True
     db.commit()
     db.refresh(u)
+
+    # Provision subaccount if we have enough banking info on file. Quietly
+    # records the error if we don't - admin can retry separately.
+    if not u.flw_subaccount_id and u.business and u.business.bank_id and u.business.account_number:
+        bank = db.get(Bank, u.business.bank_id)
+        if bank and (bank.flutter_code or bank.paystack_code):
+            account_bank = bank.flutter_code or bank.paystack_code or ""
+            try:
+                resp = await create_subaccount(
+                    account_bank=account_bank,
+                    account_number=u.business.account_number,
+                    business_name=u.business.business_name or u.fullname or u.email,
+                    business_email=u.business.business_email or u.email,
+                    business_mobile=u.phone or "0000000000",
+                    country=u.country or "NG",
+                )
+                sub_id = resp.get("subaccount_id") or resp.get("id")
+                if sub_id:
+                    u.flw_subaccount_id = str(sub_id)
+                    u.flw_subaccount_payload = json.dumps(resp)
+                    db.commit()
+                    db.refresh(u)
+            except Exception:  # noqa: BLE001
+                # Don't block approval on a provisioning failure; admin can retry.
+                traceback.print_exc()
+
     subject, html = t_account_activated(u.firstname or "there", f"{settings.site_url}/auth/login/exporter")
     send_template(
         db,
@@ -150,6 +193,54 @@ def kyc_approve(user_id: str, _: User = Depends(require_admin), db: Session = De
         user_id=u.id,
         dedupe_key=f"activated:{u.id}",
     )
+    return success(_serialize_user(u))
+
+
+@router.post("/users/{user_id}/reprovision-subaccount")
+async def reprovision_subaccount(
+    user_id: str, _: User = Depends(require_admin), db: Session = Depends(get_db),
+):
+    """Manually (re-)trigger Flutterwave subaccount provisioning for an
+    approved exporter. Used when the auto-provision at approve time failed
+    (e.g. bad bank details now fixed, FLW outage, etc).
+    """
+    import json
+    import traceback
+
+    u = db.get(User, user_id)
+    if not u:
+        raise fail("User not found", code=404)
+    if u.role != ROLE_EXPORTER:
+        raise fail("Only exporter accounts have subaccounts", code=400)
+    if u.kyc_status != "approved":
+        raise fail("Approve KYC first", code=400)
+    if not (u.business and u.business.bank_id and u.business.account_number):
+        raise fail("Seller's bank account isn't on file yet", code=400)
+    bank = db.get(Bank, u.business.bank_id)
+    if not bank or not (bank.flutter_code or bank.paystack_code):
+        raise fail("Selected bank has no Flutterwave code mapped", code=400)
+    account_bank = bank.flutter_code or bank.paystack_code or ""
+
+    try:
+        resp = await create_subaccount(
+            account_bank=account_bank,
+            account_number=u.business.account_number,
+            business_name=u.business.business_name or u.fullname or u.email,
+            business_email=u.business.business_email or u.email,
+            business_mobile=u.phone or "0000000000",
+            country=u.country or "NG",
+        )
+    except Exception as e:  # noqa: BLE001
+        traceback.print_exc()
+        raise fail(f"Flutterwave rejected the request: {e!r}", code=502)
+
+    sub_id = resp.get("subaccount_id") or resp.get("id")
+    if not sub_id:
+        raise fail("Flutterwave returned no subaccount_id", code=502)
+    u.flw_subaccount_id = str(sub_id)
+    u.flw_subaccount_payload = json.dumps(resp)
+    db.commit()
+    db.refresh(u)
     return success(_serialize_user(u))
 
 

@@ -61,6 +61,30 @@ class Payment(Base, TimestampMixin):
     order: Mapped["Order"] = relationship("Order", back_populates="payments")
 
 
+class Payout(Base, TimestampMixin):
+    """Record of a seller payout against an order.
+
+    States:
+      - pending  : queued by admin, awaiting Flutterwave dispatch
+      - sent     : POST /v3/transfers accepted; FLW will process T+0/T+1
+      - completed: confirmed settled
+      - failed   : FLW rejected or settlement bounced
+    """
+    __tablename__ = "payouts"
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True, default=new_id)
+    order_id: Mapped[str] = mapped_column(ForeignKey("orders.id", ondelete="CASCADE"), nullable=False, index=True)
+    seller_id: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    amount: Mapped[float] = mapped_column(Numeric(14, 2), nullable=False)
+    currency: Mapped[str] = mapped_column(String(8), default="NGN")
+    reference: Mapped[str] = mapped_column(String(80), unique=True, nullable=False, index=True)
+    status: Mapped[str] = mapped_column(String(20), default="pending", nullable=False)
+    provider: Mapped[str] = mapped_column(String(40), default="flutterwave")
+    provider_payload: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    initiated_by: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
+    failure_reason: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+
+
 class Review(Base, TimestampMixin):
     __tablename__ = "reviews"
 

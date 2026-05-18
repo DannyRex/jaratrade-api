@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+from datetime import datetime, timezone
 from typing import Optional
 
 from fastapi import APIRouter, Depends, Form
@@ -82,14 +83,47 @@ def update_commission_rate(
 # routing - the Flutterwave subaccount itself is configured via env var.
 
 @router.put("/commision_account")
-def update_commission_account(
+async def update_commission_account(
     _: User = Depends(require_admin),
     db: Session = Depends(get_db),
     bank_name: str = Form(...),
     account_name: str = Form(...),
     account_number: str = Form(...),
+    bank_code: Optional[str] = Form(default=None),
+    auto_provision: Optional[bool] = Form(default=False),
 ):
-    payload = {"bank_name": bank_name, "account_name": account_name, "account_number": account_number}
+    """Save the platform commission account.
+
+    If `auto_provision=true` AND `bank_code` is supplied, also provision a
+    Flutterwave subaccount on Jaratrade's side and stash the returned
+    subaccount_id in the saved record. Subsequent payments use it as the
+    commission destination automatically.
+    """
+    payload: dict = {
+        "bank_name": bank_name,
+        "account_name": account_name,
+        "account_number": account_number,
+        "bank_code": bank_code,
+    }
+
+    if auto_provision and bank_code:
+        from ..services.flutterwave import create_subaccount
+        try:
+            resp = await create_subaccount(
+                account_bank=bank_code,
+                account_number=account_number,
+                business_name=account_name,
+                business_email="admin@jaratrade.com",
+                business_mobile="0000000000",
+                country="NG",
+            )
+            sub_id = resp.get("subaccount_id") or resp.get("id")
+            if sub_id:
+                payload["flw_subaccount_id"] = str(sub_id)
+                payload["flw_provisioned_at"] = datetime.now(timezone.utc).isoformat()
+        except Exception as e:  # noqa: BLE001
+            payload["flw_provision_error"] = repr(e)
+
     setting = db.get(Setting, "commission_account")
     if setting:
         setting.value = json.dumps(payload)
@@ -103,3 +137,25 @@ def update_commission_account(
 def get_commission_account(_: User = Depends(require_admin), db: Session = Depends(get_db)):
     setting = db.get(Setting, "commission_account")
     return success(json.loads(setting.value) if setting and setting.value else {})
+
+
+def read_commission_subaccount_id(db: Session) -> Optional[str]:
+    """Return the Flutterwave subaccount ID we should route commission to,
+    preferring the admin-provisioned one over the env var fallback.
+
+    Importer-payment / order-init reads this so the commission split actually
+    follows what admin set in the UI.
+    """
+    from ..config import get_settings as _get_settings
+
+    setting = db.get(Setting, "commission_account")
+    if setting and setting.value:
+        try:
+            data = json.loads(setting.value)
+            sub = data.get("flw_subaccount_id")
+            if sub:
+                return str(sub)
+        except (ValueError, TypeError):
+            pass
+    env_id = _get_settings().flw_commission_subaccount_id
+    return env_id or None

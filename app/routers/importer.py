@@ -541,10 +541,18 @@ async def init_payment(
     db.add(payment)
     db.commit()
 
-    # Pull the admin-configured commission rate so the FLW split honours
-    # whatever's currently set in /admin/settings.
-    from ..routers.settings_router import read_commission_rate
+    # Pull the admin-configured commission rate + commission subaccount so the
+    # split honours whatever's currently set in /admin/settings.
+    from ..routers.settings_router import read_commission_rate, read_commission_subaccount_id
+
     commission_decimal = read_commission_rate(db) / 100.0
+    commission_sub = read_commission_subaccount_id(db)
+
+    # Seller subaccount comes from the exporter who owns this order.
+    seller_sub: Optional[str] = None
+    if order.exporter_id:
+        exporter = db.get(User, order.exporter_id)
+        seller_sub = exporter.flw_subaccount_id if exporter else None
 
     config = build_inline_config(
         tx_ref=tx_ref,
@@ -553,6 +561,8 @@ async def init_payment(
         customer={"email": user.email, "phone_number": user.phone or "", "name": user.fullname},
         order_id=order.order_number,
         commission_rate=commission_decimal,
+        commission_subaccount_id=commission_sub,
+        seller_subaccount_id=seller_sub,
     )
     return success(config)
 

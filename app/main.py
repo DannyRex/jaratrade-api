@@ -180,6 +180,7 @@ from .routers import (  # noqa: E402
     settings_router,
     bank_router,
     logs,
+    payouts,
 )
 
 app.include_router(public.router)
@@ -197,3 +198,4 @@ app.include_router(disputes.admin_router)
 app.include_router(settings_router.router)
 app.include_router(bank_router.router)
 app.include_router(logs.router)
+app.include_router(payouts.router)

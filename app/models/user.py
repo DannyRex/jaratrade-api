@@ -48,6 +48,13 @@ class User(Base, TimestampMixin):
     kyc_reviewed_at: Mapped[Optional["datetime"]] = mapped_column(DateTime, nullable=True)
     kyc_rejection_reason: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
 
+    # Flutterwave subaccount the seller's share of each order's split lands in.
+    # Populated by the KYC approval flow once the seller's bank details have been
+    # validated against Flutterwave's resolve-account endpoint. Unverified
+    # exporters or those with bad bank details have this null and can't transact.
+    flw_subaccount_id: Mapped[Optional[str]] = mapped_column(String(120), nullable=True)
+    flw_subaccount_payload: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+
     plan_id: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
     plan_renewal_date: Mapped[Optional["datetime"]] = mapped_column(DateTime, nullable=True)
     plan_auto_renew: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)

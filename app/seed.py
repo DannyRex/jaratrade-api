@@ -193,6 +193,10 @@ def _seed_demo_users(db: Session) -> None:
     )
     db.add(exporter)
     db.flush()
+    # Seed a banking record so the exporter is payout-ready out of the gate.
+    # Picks the first Nigerian bank that has a flutter_code, with a dev-grade
+    # 10-digit account number that resolves cleanly against the FLW dev stub.
+    sample_bank = db.query(Bank).filter(Bank.flutter_code.isnot(None)).first()
     db.add(BusinessProfile(
         user_id=exporter.id,
         business_name="Adaeze Foods Ltd",
@@ -204,6 +208,9 @@ def _seed_demo_users(db: Session) -> None:
         duration_in_business=4,
         tin="TIN789",
         valid_identification="passport",
+        bank_id=sample_bank.id if sample_bank else None,
+        account_number="0123456789",
+        account_name="Adaeze Foods Ltd",
     ))
 
     # Demo importer
