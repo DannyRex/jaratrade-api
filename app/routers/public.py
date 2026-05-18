@@ -36,6 +36,26 @@ def _paged_rows(rows, total: int, page: int = 0, length: int = 50):
     return success({"rows": rows, "total_length": total, "page": page, "len": length})
 
 
+@router.get("/metrics")
+def public_metrics(db: Session = Depends(get_db)):
+    """Marketing-page metrics. Honest live counts pulled from the DB.
+
+    Used by the homepage hero stat block + body copy on /sellers, /markets,
+    /help/exporter. Cached on the client via React Query staleTime; we don't
+    bother with server caching at this scale.
+    """
+    return success({
+        "verified_exporters": db.query(User).filter(
+            User.role == ROLE_EXPORTER,
+            User.is_active.is_(True),
+            User.kyc_status == "approved",
+        ).count(),
+        "active_skus": db.query(Product).filter(Product.status == 1).count(),
+        "markets": db.query(Market).filter(Market.status == 1).count(),
+        "categories": db.query(Category).filter(Category.status == 1).count(),
+    })
+
+
 @router.get("/data/category")
 def list_categories(db: Session = Depends(get_db)):
     items = db.query(Category).filter(Category.status == 1).order_by(Category.name).all()

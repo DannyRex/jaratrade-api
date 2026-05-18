@@ -36,3 +36,19 @@ def test_reference_data_endpoints(client):
 def test_unknown_product_404(client):
     r = client.get("/public/products/does-not-exist")
     assert r.status_code == 404
+
+
+def test_public_metrics(client):
+    """Marketing-page metrics should return live, non-negative counts for
+    each surface displayed on the homepage hero."""
+    r = client.get("/public/metrics")
+    assert r.status_code == 200
+    p = r.json()["payload"]
+    for key in ("verified_exporters", "active_skus", "markets", "categories"):
+        assert key in p, f"missing {key}"
+        assert isinstance(p[key], int) and p[key] >= 0
+    # Seed creates at least one approved exporter, several products, 12 markets
+    assert p["verified_exporters"] >= 1
+    assert p["active_skus"] >= 1
+    assert p["markets"] >= 1
+    assert p["categories"] >= 1

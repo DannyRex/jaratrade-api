@@ -121,7 +121,7 @@ def send_template(
 # Each function returns (subject, html). All copy adapted from the BRD.
 
 def _wrap(body: str) -> str:
-    return f"""<!doctype html><html><body style="font-family:system-ui,Arial,sans-serif;color:#1a1a1a;max-width:560px;margin:auto;padding:24px;line-height:1.6">{body}<hr style="margin:32px 0;border:none;border-top:1px solid #e5e7eb"><p style="font-size:12px;color:#6b7280">Jaratrade Ltd · Lagos & London</p></body></html>"""
+    return f"""<!doctype html><html><body style="font-family:system-ui,Arial,sans-serif;color:#1a1a1a;max-width:560px;margin:auto;padding:24px;line-height:1.6">{body}<hr style="margin:32px 0;border:none;border-top:1px solid #e5e7eb"><p style="font-size:12px;color:#6b7280">Jaratrade Ltd</p></body></html>"""
 
 
 def t_welcome_verify(name: str, verify_link: str) -> tuple[str, str]:
