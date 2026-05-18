@@ -282,7 +282,18 @@ async def create_subaccount(
         "split_value": split_value,
         "split_type": split_type,
     }
-    return await _flw_post("/v3/subaccounts", payload)
+    try:
+        return await _flw_post("/v3/subaccounts", payload)
+    except FlutterwaveError as e:
+        # Idempotency: if FLW says a subaccount with this (bank, account)
+        # combo already exists, reconcile to it rather than 502'ing the
+        # admin. Their `subaccount_id` is stable so this is safe.
+        msg = (e.body.get("message") if isinstance(e.body, dict) else str(e.body)) or ""
+        if "already exists" in msg.lower():
+            existing = await find_subaccount_by_account(account_bank, account_number)
+            if existing:
+                return existing
+        raise
 
 
 async def get_subaccount(subaccount_id: str) -> Dict[str, Any]:
@@ -294,6 +305,35 @@ async def get_subaccount(subaccount_id: str) -> Dict[str, Any]:
         resp = await client.get(f"https://api.flutterwave.com/v3/subaccounts/{subaccount_id}")
         resp.raise_for_status()
         return resp.json().get("data") or {}
+
+
+async def list_subaccounts() -> list:
+    """Return every subaccount on the Flutterwave merchant account.
+
+    Used to reconcile "subaccount already exists" errors - we re-fetch
+    and pick the one matching our (account_bank, account_number) so we
+    don't end up with orphaned records on FLW we can't reference.
+    """
+    if not settings.flw_secret_key:
+        return []
+    headers = {"Authorization": f"Bearer {settings.flw_secret_key}"}
+    async with httpx.AsyncClient(timeout=15.0, headers=headers) as client:
+        resp = await client.get("https://api.flutterwave.com/v3/subaccounts")
+        resp.raise_for_status()
+        body = resp.json()
+        data = body.get("data")
+        if isinstance(data, list):
+            return data
+        # Some FLW responses wrap it; defensive.
+        return data.get("data", []) if isinstance(data, dict) else []
+
+
+async def find_subaccount_by_account(account_bank: str, account_number: str) -> Optional[Dict[str, Any]]:
+    """Look up an existing subaccount by its bank + account number tuple."""
+    for sub in await list_subaccounts():
+        if sub.get("account_number") == account_number and str(sub.get("account_bank") or "") == str(account_bank):
+            return sub
+    return None
 
 
 async def transfer_to_bank(
