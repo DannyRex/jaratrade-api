@@ -353,6 +353,39 @@ Each fallback is logged and clearly tagged so you don't accidentally ship them.
 7. **Containerise**: a typical `Dockerfile` would be a 4-line slim-Python + uvicorn workdir image.
 8. **Deploy**: Fly.io, Railway, Render, or any container host. Set env vars + a Postgres service.
 
+## Railway deployment (config-as-code)
+
+This repo ships two Railway service configs. Same Dockerfile, same env vars, different deploy behaviour.
+
+| File | Service role | Start behaviour |
+|---|---|---|
+| `railway.json` | **Main API** (`jaratrade-api`) - long-running uvicorn server, public HTTPS endpoint, `/health` checked on every deploy | Uses `Dockerfile`'s `CMD` (runs `alembic upgrade head` then `uvicorn app.main:app ...`). Restarts on failure up to 5 times. |
+| `railway.cron.json` | **Nightly payout cron** (`jaratrade-payouts-cron`) - runs once a day, exits | `python -m app.cron process_payouts` on schedule `0 2 * * *` UTC. Never auto-restarts (it's supposed to exit). |
+
+### One-time setup in the Railway dashboard
+
+The config files only take effect after the services exist in the Railway project. Do this once:
+
+1. **Main API** - already deployed. Confirm under Settings → Source that **Config Path** is `railway.json` (the default).
+2. **Cron service** - create a new service in the same project:
+   - **+ New** → **GitHub Repo** → pick the same `jaratrade-api` repo.
+   - Rename the service to `jaratrade-payouts-cron`.
+   - Settings → Source → **Config Path:** set to `railway.cron.json`.
+   - Settings → Networking → disable public networking (cron has no HTTP surface).
+   - Variables → reference the same env vars from `jaratrade-api` (`DATABASE_URL`, `FLW_SECRET_KEY`, `FLW_PUBLIC_KEY`, `FLW_ENCRYPT_KEY`, `FLW_WEBHOOK_SECRET`, `FLW_COMMISSION_SUBACCOUNT_ID`, SMTP vars). Use "shared variables" / "variable reference" so they stay in sync with the API service.
+   - Deploy.
+
+After that, every push to `main` updates both services from git. The cron schedule, start command, and healthcheck path all live in the repo - no clicking required.
+
+### Adding more cron jobs later
+
+If you need more nightly jobs (e.g. `renewal_reminders`, `inventory_reminders`), don't pile them into the existing cron service - each Railway service has one schedule + one start command. Instead:
+
+1. Copy `railway.cron.json` to `railway.cron.<jobname>.json`, swap the start command + schedule.
+2. Add another service in the Railway project, pointed at the new config path.
+
+The shared `JOBS` registry in `app/cron.py` means each service still uses the same Docker image - they just dispatch a different job.
+
 ## License
 
 Proprietary - Jaratrade Ltd.
