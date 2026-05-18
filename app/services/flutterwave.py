@@ -19,13 +19,30 @@ from ..config import get_settings
 settings = get_settings()
 
 
-def build_inline_config(*, tx_ref: str, amount: float, currency: str, customer: Dict[str, str], order_id: str) -> Dict[str, Any]:
+def build_inline_config(
+    *,
+    tx_ref: str,
+    amount: float,
+    currency: str,
+    customer: Dict[str, str],
+    order_id: str,
+    commission_rate: Optional[float] = None,
+) -> Dict[str, Any]:
+    """Build the Flutterwave Inline-checkout config.
+
+    ``commission_rate`` is the decimal split (e.g. 0.02 for 2%) routed to the
+    platform's Flutterwave subaccount. Pass ``None`` to fall back to the
+    historic 2% default; new callers should look the rate up via
+    ``settings_router.read_commission_rate(db)`` and pass it in so the
+    admin's configured value drives the split.
+    """
     split = []
     if settings.flw_commission_subaccount_id:
+        rate = 0.02 if commission_rate is None else commission_rate
         split.append({
             "id": settings.flw_commission_subaccount_id,
             "transaction_charge_type": "percentage",
-            "transaction_charge": "0.02",
+            "transaction_charge": f"{rate:.4f}",
         })
     return {
         "public_key": settings.flw_public_key,

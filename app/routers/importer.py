@@ -541,12 +541,18 @@ async def init_payment(
     db.add(payment)
     db.commit()
 
+    # Pull the admin-configured commission rate so the FLW split honours
+    # whatever's currently set in /admin/settings.
+    from ..routers.settings_router import read_commission_rate
+    commission_decimal = read_commission_rate(db) / 100.0
+
     config = build_inline_config(
         tx_ref=tx_ref,
         amount=float(order.total),
         currency=order.currency,
         customer={"email": user.email, "phone_number": user.phone or "", "name": user.fullname},
         order_id=order.order_number,
+        commission_rate=commission_decimal,
     )
     return success(config)
 
