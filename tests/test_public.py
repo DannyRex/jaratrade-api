@@ -52,3 +52,47 @@ def test_public_metrics(client):
     assert p["active_skus"] >= 1
     assert p["markets"] >= 1
     assert p["categories"] >= 1
+
+
+def test_unverified_exporter_products_hidden_publicly(client):
+    """Regression: products from a not-yet-approved exporter must not show
+    up in /public/products, /public (home aggregate), or top_exporter."""
+    from app.database import SessionLocal
+    from app.models import Product, User
+
+    with SessionLocal() as db:
+        exp = db.query(User).filter(User.email == "exporter@jaratrade.com").first()
+        original_status = exp.kyc_status
+        exp.kyc_status = "pending"
+        db.commit()
+
+        try:
+            r = client.get("/public/products")
+            assert r.status_code == 200
+            assert r.json()["payload"]["data"] == []
+
+            r = client.get("/public")
+            assert r.status_code == 200
+            p = r.json()["payload"]
+            assert p["top_products"] == []
+            assert all(e["id"] != exp.id for e in p["top_exporter"])
+        finally:
+            db.merge(User(id=exp.id, kyc_status=original_status))
+            db.commit()
+
+
+def test_verified_exporter_serializer_includes_kyc_flag(client):
+    r = client.get("/public")
+    assert r.status_code == 200
+    for e in r.json()["payload"]["top_exporter"]:
+        assert e["is_verified"] is True
+        assert e["kyc_status"] == "approved"
+
+
+def test_sort_price_asc_actually_orders_by_price(client):
+    """Regression: freshness ranking was overriding the user's price sort."""
+    r = client.get("/public/products", params={"sort_by": "price_asc"})
+    assert r.status_code == 200
+    rows = r.json()["payload"]["data"]
+    prices = [float(p["price"]) for p in rows]
+    assert prices == sorted(prices), f"price_asc was not sorted: {prices}"

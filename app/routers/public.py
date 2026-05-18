@@ -102,10 +102,19 @@ def list_exporter_plans(db: Session = Depends(get_db)):
 
 @router.get("")
 def home(db: Session = Depends(get_db)):
-    """Aggregate home page payload - top exporters, top products, top categories."""
+    """Aggregate home page payload - top exporters, top products, top categories.
+
+    Only KYC-approved, active exporters (and their products) are surfaced.
+    Unverified accounts can sign up and prepare listings but stay invisible
+    to the public marketplace until admin approves them.
+    """
     exporters = (
         db.query(User)
-        .filter(User.role == ROLE_EXPORTER, User.is_active.is_(True))
+        .filter(
+            User.role == ROLE_EXPORTER,
+            User.is_active.is_(True),
+            User.kyc_status == "approved",
+        )
         .order_by(desc(User.product_delivered))
         .limit(10)
         .all()
@@ -115,7 +124,11 @@ def home(db: Session = Depends(get_db)):
     products = (
         db.query(Product)
         .join(User, Product.exporter_id == User.id)
-        .filter(Product.status == 1)
+        .filter(
+            Product.status == 1,
+            User.is_active.is_(True),
+            User.kyc_status == "approved",
+        )
         .order_by(desc(Product.is_featured), desc(Product.views), desc(Product.time_created))
         .limit(12)
         .all()
@@ -150,7 +163,16 @@ def list_products(
     exporter: Optional[str] = Query(default=None),
     store: Optional[str] = Query(default=None),
 ):
-    q = db.query(Product).filter(Product.status == 1)
+    # Only verified, active exporters' products show on the public marketplace.
+    q = (
+        db.query(Product)
+        .join(User, Product.exporter_id == User.id)
+        .filter(
+            Product.status == 1,
+            User.is_active.is_(True),
+            User.kyc_status == "approved",
+        )
+    )
     if category:
         q = q.join(Category).filter(or_(Category.id == category, Category.name == category))
     if exporter:
@@ -158,18 +180,21 @@ def list_products(
     if store:
         q = q.filter(Product.store_id == store)
     total = q.count()
-    # Ranking signals (highest priority first):
-    #   1. Sponsored listings (promote=1) always lead
-    #   2. Recently-confirmed inventory next (BRD: weekly-fresh stock wins ranking)
-    #   3. Then the user's chosen sort
+    # Ranking signals:
+    #   - Sponsored (promote=1) always leads — paid placement.
+    #   - User's explicit sort comes next; if they pick price/popular we
+    #     honour it strictly. Freshness only orders the "newest" default,
+    #     and acts as a final tiebreaker elsewhere.
     fresh_first = Product.last_inventory_update_at.desc().nulls_last()
     if sort_by == "price_asc":
-        q = q.order_by(desc(Product.promote), fresh_first, Product.price.asc())
+        q = q.order_by(desc(Product.promote), Product.price.asc(), fresh_first)
     elif sort_by == "price_desc":
-        q = q.order_by(desc(Product.promote), fresh_first, Product.price.desc())
+        q = q.order_by(desc(Product.promote), Product.price.desc(), fresh_first)
     elif sort_by == "popular":
-        q = q.order_by(desc(Product.promote), fresh_first, desc(Product.views))
+        q = q.order_by(desc(Product.promote), desc(Product.views), fresh_first)
     else:
+        # Default: "newest" — surface freshly-confirmed stock first, then
+        # genuinely recent listings.
         q = q.order_by(desc(Product.promote), fresh_first, desc(Product.time_created))
     items = q.offset(p * len_).limit(len_).all()
     rows = [_serialize_product_summary(prod, db) for prod in items]
@@ -336,6 +361,12 @@ def _serialize_top_exporter(u: User) -> dict:
         "business_address": biz.business_address if biz else "",
         "business_reg_number": biz.business_reg_number if biz else "",
         "order_count": u.product_delivered or 0,
+        # v3.2: surface KYC status + admin-issued verification flag so the
+        # public marketplace can render the "Verified" badge truthfully.
+        # The public endpoints only ever return approved exporters, but the
+        # field is here for explicitness and for authenticated dashboards.
+        "is_verified": u.kyc_status == "approved",
+        "kyc_status": u.kyc_status,
     }
 
 
