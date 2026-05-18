@@ -370,12 +370,33 @@ def _serialize_top_exporter(u: User) -> dict:
     }
 
 
+def _secondary_price_block(price: float, base_currency: str, db: Session) -> dict:
+    """Return GBP-equivalent of a listed price for the buyer-side display.
+
+    UK importers see "₦18,000 · ~£10.40" so they can ballpark cost without
+    fetching their own FX. The rate runs through fx.current_rate() so an
+    admin override takes precedence over live data.
+    """
+    from ..services.fx import current_rate
+
+    out: dict = {"secondary_currency": "GBP", "secondary_amount": None, "secondary_rate": None}
+    if not price or base_currency.upper() == "GBP":
+        return out
+    rate = current_rate(base_currency, "GBP", db=db)
+    if rate is None:
+        return out
+    out["secondary_amount"] = f"{float(price) * rate:.2f}"
+    out["secondary_rate"] = round(rate, 8)
+    return out
+
+
 def _serialize_product_summary(p: Product, db: Session) -> dict:
     exporter = db.get(User, p.exporter_id)
     biz = exporter.business if exporter else None
     cat = db.get(Category, p.category_id)
     store = db.get(Store, p.store_id)
     market = db.get(Market, store.market_id) if store else None
+    secondary = _secondary_price_block(float(p.price or 0), p.currency or "NGN", db)
     return {
         "id": p.id,
         "exporter_id": p.exporter_id,
@@ -387,6 +408,7 @@ def _serialize_product_summary(p: Product, db: Session) -> dict:
         "store": f"{store.address}" if store else "",
         "price": f"{float(p.price):.2f}",
         "currency": p.currency,
+        **secondary,
         "images": p.images or "[]",
         "properties": p.properties or "{}",
         "market_name": market.name if market else "",
@@ -404,6 +426,7 @@ def _serialize_product_detail(p: Product, db: Session) -> dict:
     cat = db.get(Category, p.category_id)
     store = db.get(Store, p.store_id)
     market = db.get(Market, store.market_id) if store else None
+    secondary = _secondary_price_block(float(p.price or 0), p.currency or "NGN", db)
     return {
         "id": p.id,
         "product_name": p.product_name,
@@ -412,6 +435,7 @@ def _serialize_product_detail(p: Product, db: Session) -> dict:
         "store_id": p.store_id,
         "price": f"{float(p.price):.2f}",
         "currency": p.currency,
+        **secondary,
         "images": p.images or "[]",
         "short_video_link": p.short_video_link or "",
         "min_order_quantity": p.min_order_quantity,

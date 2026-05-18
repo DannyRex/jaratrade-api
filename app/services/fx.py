@@ -1,12 +1,16 @@
 """Currency conversion.
 
-Strategy:
-- A static fallback table (so the API works offline / in tests / when the
-  upstream rate provider is down).
-- Optional live lookups against a public FX API (open.er-api.com - no API key
-  required). We cache rates for 6 hours per base currency.
+Strategy (in order of precedence):
+1. Admin-configured override stored in the `Setting` table under keys
+   like "fx_rate_NGN_GBP" - lets the team hand-pick a rate without
+   redeploying (useful when the live provider is wonky or you want a
+   conservative margin against volatility).
+2. Live lookups against open.er-api.com (no API key), cached 6h.
+3. Static fallback table so tests + offline runs never crash.
 
-Public surface: just `convert(amount, from_currency, to_currency)`.
+Public surface:
+  - convert(amount, from, to, db=None) -> Optional[float]
+  - current_rate(from, to, db=None)    -> Optional[float]
 """
 from __future__ import annotations
 
@@ -14,6 +18,7 @@ import time
 from typing import Dict, Optional
 
 import httpx
+from sqlalchemy.orm import Session
 
 # Hardcoded fallbacks - illustrative, not authoritative. Refresh quarterly.
 # Rates are: 1 unit of `key` -> N units of GBP.
@@ -49,7 +54,68 @@ def _live_rates(base: str) -> Optional[Dict[str, float]]:
         return None
 
 
-def convert(amount: float, from_currency: str, to_currency: str) -> Optional[float]:
+def _override_rate(db: Optional[Session], from_currency: str, to_currency: str) -> Optional[float]:
+    """Read an admin-configured rate from the Setting table, if any.
+
+    Looked-up keys (first hit wins):
+      fx_rate_{FROM}_{TO}      e.g. fx_rate_NGN_GBP  (1 NGN = X GBP)
+      fx_rate_{TO}_{FROM}      reciprocal — we invert it
+    """
+    if db is None:
+        return None
+    try:
+        from ..models import Setting  # local import to avoid circular at module load
+    except Exception:  # noqa: BLE001
+        return None
+
+    key = f"fx_rate_{from_currency.upper()}_{to_currency.upper()}"
+    s = db.get(Setting, key)
+    if s and s.value:
+        try:
+            v = float(s.value)
+            if v > 0:
+                return v
+        except (TypeError, ValueError):
+            pass
+    key_rev = f"fx_rate_{to_currency.upper()}_{from_currency.upper()}"
+    s = db.get(Setting, key_rev)
+    if s and s.value:
+        try:
+            v = float(s.value)
+            if v > 0:
+                return 1.0 / v
+        except (TypeError, ValueError, ZeroDivisionError):
+            pass
+    return None
+
+
+def current_rate(from_currency: str, to_currency: str, db: Optional[Session] = None) -> Optional[float]:
+    """Return the multiplier such that `amount_to = amount_from * rate`.
+
+    Returns None if no rate is available.
+    """
+    if from_currency == to_currency:
+        return 1.0
+
+    # 1. Admin override
+    override = _override_rate(db, from_currency, to_currency)
+    if override is not None:
+        return override
+
+    # 2. Live
+    rates = _live_rates(from_currency)
+    if rates and to_currency in rates:
+        return float(rates[to_currency])
+
+    # 3. Fallback table via GBP
+    f_to_gbp = _FALLBACK_TO_GBP.get(from_currency)
+    t_to_gbp = _FALLBACK_TO_GBP.get(to_currency)
+    if f_to_gbp is None or t_to_gbp is None or t_to_gbp == 0:
+        return None
+    return f_to_gbp / t_to_gbp
+
+
+def convert(amount: float, from_currency: str, to_currency: str, db: Optional[Session] = None) -> Optional[float]:
     """Convert `amount` from one ISO-4217 code to another.
 
     Returns None if neither live nor fallback rates are available - callers
@@ -57,16 +123,7 @@ def convert(amount: float, from_currency: str, to_currency: str) -> Optional[flo
     """
     if amount == 0 or from_currency == to_currency:
         return float(amount)
-
-    # Try live first
-    rates = _live_rates(from_currency)
-    if rates and to_currency in rates:
-        return float(amount) * float(rates[to_currency])
-
-    # Fall back: from -> GBP -> to
-    f_to_gbp = _FALLBACK_TO_GBP.get(from_currency)
-    t_to_gbp = _FALLBACK_TO_GBP.get(to_currency)
-    if f_to_gbp is None or t_to_gbp is None or t_to_gbp == 0:
+    rate = current_rate(from_currency, to_currency, db=db)
+    if rate is None:
         return None
-    gbp = float(amount) * f_to_gbp
-    return gbp / t_to_gbp
+    return float(amount) * rate

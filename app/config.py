@@ -44,6 +44,10 @@ class Settings(BaseSettings):
     flw_secret_key: str = Field(default="")
     flw_encrypt_key: str = Field(default="")
     flw_commission_subaccount_id: str = Field(default="")
+    # Shared secret echoed back in the `verif-hash` header on every webhook.
+    # Set to the same string you put in Flutterwave's dashboard under
+    # Settings -> Webhooks. Leave empty in dev to disable signature checks.
+    flw_webhook_secret: str = Field(default="")
 
     # Email (transactional). Not required for dev.
     smtp_host: str = Field(default="")

@@ -181,6 +181,7 @@ from .routers import (  # noqa: E402
     bank_router,
     logs,
     payouts,
+    flw_webhook,
 )
 
 app.include_router(public.router)
@@ -199,3 +200,4 @@ app.include_router(settings_router.router)
 app.include_router(bank_router.router)
 app.include_router(logs.router)
 app.include_router(payouts.router)
+app.include_router(flw_webhook.router)

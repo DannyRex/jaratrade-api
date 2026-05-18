@@ -78,6 +78,86 @@ def update_commission_rate(
     })
 
 
+# ───────────────────────── FX rate (display + secondary price) ─────────────────
+# Stored as the multiplier from one currency to another, e.g. for NGN -> GBP
+# you'd save 0.00057 (= 1 / 1750 if 1 GBP ≈ 1,750 NGN). Mostly used so the
+# marketplace can show a UK buyer "₦18,000 / ~£10" next to the price without
+# hitting the live FX API on every page render.
+
+@router.get("/fx_rate")
+def get_fx_rate(
+    from_currency: str = "NGN",
+    to_currency: str = "GBP",
+    _: User = Depends(require_admin),
+    db: Session = Depends(get_db),
+):
+    """Return the current effective rate between the two currencies, the
+    admin-override value (if any), and live + fallback values for context."""
+    from ..services.fx import _FALLBACK_TO_GBP, _live_rates, _override_rate, current_rate
+
+    pair_from = from_currency.upper()
+    pair_to = to_currency.upper()
+    override = _override_rate(db, pair_from, pair_to)
+    live_rates = _live_rates(pair_from)
+    live = live_rates.get(pair_to) if live_rates else None
+    f_to_gbp = _FALLBACK_TO_GBP.get(pair_from)
+    t_to_gbp = _FALLBACK_TO_GBP.get(pair_to)
+    fallback = (f_to_gbp / t_to_gbp) if f_to_gbp is not None and t_to_gbp not in (None, 0) else None
+    effective = current_rate(pair_from, pair_to, db=db)
+    return success({
+        "from": pair_from,
+        "to": pair_to,
+        "effective_rate": effective,
+        "override_rate": override,
+        "live_rate": live,
+        "fallback_rate": fallback,
+        # Convenience: what does 1000 units convert to?
+        "example_1000": (effective * 1000) if effective else None,
+    })
+
+
+@router.put("/fx_rate")
+def update_fx_rate(
+    _: User = Depends(require_admin),
+    db: Session = Depends(get_db),
+    from_currency: str = Form(...),
+    to_currency: str = Form(...),
+    rate: float = Form(...),
+):
+    """Save an admin-configured FX rate override. Takes effect immediately
+    for all secondary-price displays + plan-currency conversion checks."""
+    pair_from = from_currency.upper()
+    pair_to = to_currency.upper()
+    if pair_from == pair_to:
+        raise fail("from and to must differ")
+    if rate <= 0:
+        raise fail("rate must be positive")
+    key = f"fx_rate_{pair_from}_{pair_to}"
+    setting = db.get(Setting, key)
+    if setting:
+        setting.value = f"{rate:.10f}"
+    else:
+        db.add(Setting(key=key, value=f"{rate:.10f}"))
+    db.commit()
+    return success({"from": pair_from, "to": pair_to, "rate": rate})
+
+
+@router.delete("/fx_rate")
+def clear_fx_rate(
+    _: User = Depends(require_admin),
+    db: Session = Depends(get_db),
+    from_currency: str = "NGN",
+    to_currency: str = "GBP",
+):
+    """Clear the override so the live/fallback rate kicks back in."""
+    key = f"fx_rate_{from_currency.upper()}_{to_currency.upper()}"
+    setting = db.get(Setting, key)
+    if setting:
+        db.delete(setting)
+        db.commit()
+    return success({"cleared": True})
+
+
 # ───────────────────────── Commission account ─────────────────────────
 # Reference record (bank/name/number) shown to staff. Doesn't drive payment
 # routing - the Flutterwave subaccount itself is configured via env var.

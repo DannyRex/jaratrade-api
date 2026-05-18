@@ -150,55 +150,61 @@ def eligible_for_payout(
     return success({"rows": preview, "total_length": len(preview), "page": 0, "len": len(preview)})
 
 
-@router.post("/{order_id}/send")
-async def send_payout(
-    order_id: str,
-    admin: User = Depends(require_admin),
-    db: Session = Depends(get_db),
-):
-    """Dispatch the seller payout for a delivered order.
+class PayoutDispatchError(Exception):
+    """Raised when a payout can't be dispatched. Carries an HTTP-friendly code."""
 
-    Computes the seller share against the configured commission rate +
-    resolved-dispute refunds, then calls Flutterwave's transfers API.
-    Records the request as a Payout row so we have an audit trail even
-    if the FLW dispatch fails.
+    def __init__(self, message: str, code: int = 400):
+        super().__init__(message)
+        self.code = code
+
+
+async def dispatch_payout(
+    order: Order,
+    db: Session,
+    initiated_by: Optional[str] = None,
+) -> Payout:
+    """Shared core: pre-flight checks + Flutterwave transfer + DB write.
+
+    Used by both the admin HTTP endpoint (with an admin user id) and the
+    nightly cron (with initiated_by=None / "cron"). Returns the persisted
+    Payout row; raises PayoutDispatchError on any guard failure or FLW
+    rejection so callers can map to the right HTTP status / log shape.
     """
-    order = db.get(Order, order_id)
-    if not order:
-        raise fail("Order not found", code=404)
     if order.status != "delivered":
-        raise fail(f"Order must be 'delivered' (currently '{order.status}')", code=400)
+        raise PayoutDispatchError(
+            f"Order must be 'delivered' (currently '{order.status}')", code=400,
+        )
 
     cutoff = datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(days=DISPUTE_WINDOW_DAYS)
     if order.time_updated > cutoff:
-        raise fail(
-            f"Dispute window still open. Earliest payout: "
+        raise PayoutDispatchError(
+            "Dispute window still open. Earliest payout: "
             f"{(order.time_updated + timedelta(days=DISPUTE_WINDOW_DAYS)).strftime('%Y-%m-%d')}",
             code=400,
         )
 
     if db.query(Payout).filter(Payout.order_id == order.id).first():
-        raise fail("Payout already initiated for this order", code=409)
+        raise PayoutDispatchError("Payout already initiated for this order", code=409)
 
     successful = (
         db.query(Payment).filter(Payment.order_id == order.id, Payment.status == "successful").first()
     )
     if not successful:
-        raise fail("No successful payment on this order; nothing to pay out", code=400)
+        raise PayoutDispatchError("No successful payment on this order; nothing to pay out", code=400)
 
     seller = db.get(User, order.exporter_id) if order.exporter_id else None
     if not seller or not seller.business:
-        raise fail("Seller is missing a business profile", code=400)
+        raise PayoutDispatchError("Seller is missing a business profile", code=400)
     if not seller.business.account_number or not seller.business.bank_id:
-        raise fail("Seller's bank account isn't on file", code=400)
+        raise PayoutDispatchError("Seller's bank account isn't on file", code=400)
     bank = db.get(Bank, seller.business.bank_id)
     if not bank or not (bank.flutter_code or bank.paystack_code):
-        raise fail("Seller's bank has no Flutterwave code mapped", code=400)
+        raise PayoutDispatchError("Seller's bank has no Flutterwave code mapped", code=400)
 
     rate_pct = read_commission_rate(db)
     amount = _seller_share(order, rate_pct, db)
     if amount <= 0:
-        raise fail("Computed seller share is zero (full refund already issued?)", code=400)
+        raise PayoutDispatchError("Computed seller share is zero (full refund already issued?)", code=400)
 
     reference = "JARAPAY" + secrets.token_urlsafe(8).replace("-", "")[:10]
     payout = Payout(
@@ -208,7 +214,7 @@ async def send_payout(
         currency=order.currency,
         reference=reference,
         status="pending",
-        initiated_by=admin.id,
+        initiated_by=initiated_by,
     )
     db.add(payout)
     db.commit()
@@ -229,20 +235,42 @@ async def send_payout(
         payout.failure_reason = f"{e.status_code}: {e.body}"
         db.commit()
         db.refresh(payout)
-        raise fail(f"Flutterwave rejected the transfer: {e.status_code} - {e.body}", code=502)
+        raise PayoutDispatchError(
+            f"Flutterwave rejected the transfer: {e.status_code} - {e.body}", code=502,
+        )
     except Exception as e:  # noqa: BLE001
         traceback.print_exc()
         payout.status = "failed"
         payout.failure_reason = repr(e)
         db.commit()
         db.refresh(payout)
-        raise fail(f"Flutterwave call failed: {e!r}", code=502)
+        raise PayoutDispatchError(f"Flutterwave call failed: {e!r}", code=502)
 
-    payout.status = "sent" if str(resp.get("status", "")).upper() in ("NEW", "PENDING", "QUEUED", "SUCCESSFUL", "COMPLETED") else "failed"
+    payout.status = (
+        "sent"
+        if str(resp.get("status", "")).upper() in ("NEW", "PENDING", "QUEUED", "SUCCESSFUL", "COMPLETED")
+        else "failed"
+    )
     payout.provider_payload = json.dumps(resp)
     if payout.status == "failed":
         payout.failure_reason = json.dumps(resp)
     db.commit()
     db.refresh(payout)
+    return payout
 
+
+@router.post("/{order_id}/send")
+async def send_payout(
+    order_id: str,
+    admin: User = Depends(require_admin),
+    db: Session = Depends(get_db),
+):
+    """Dispatch the seller payout for a delivered order."""
+    order = db.get(Order, order_id)
+    if not order:
+        raise fail("Order not found", code=404)
+    try:
+        payout = await dispatch_payout(order, db, initiated_by=admin.id)
+    except PayoutDispatchError as e:
+        raise fail(str(e), code=e.code)
     return success(_serialize(payout, order))

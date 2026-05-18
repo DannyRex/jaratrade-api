@@ -279,6 +279,67 @@ def inventory_reminders(db: Session, stale_after_days: int = 7) -> int:
     return sent
 
 
+# ───────────────────────── process_payouts ─────────────────────────
+
+def process_payouts(db: Session) -> int:
+    """Auto-dispatch seller payouts for every order eligible right now.
+
+    Eligible = delivered + past 7-day dispute window + successful payment +
+    no payout record yet. Calls the same shared `dispatch_payout` helper
+    the admin /adm/payouts/{id}/send endpoint uses, so behaviour and audit
+    trail are identical regardless of how the payout was triggered.
+
+    Run nightly (e.g. via a Railway cron schedule):
+        python -m app.cron process_payouts
+
+    Returns the count of payouts successfully dispatched (status='sent').
+    Failed dispatches still leave a Payout row with status='failed' so the
+    admin can re-trigger from /admin/payouts.
+    """
+    import asyncio
+
+    from .models import Order, Payment, Payout
+    from .routers.payouts import (
+        DISPUTE_WINDOW_DAYS,
+        PayoutDispatchError,
+        dispatch_payout,
+    )
+
+    cutoff = datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(days=DISPUTE_WINDOW_DAYS)
+    candidates = (
+        db.query(Order)
+        .filter(Order.status == "delivered", Order.time_updated <= cutoff)
+        .all()
+    )
+    dispatched = 0
+    skipped = 0
+    failed = 0
+    for order in candidates:
+        if db.query(Payout).filter(Payout.order_id == order.id).first():
+            skipped += 1
+            continue
+        if not db.query(Payment).filter(Payment.order_id == order.id, Payment.status == "successful").first():
+            skipped += 1
+            continue
+        try:
+            payout = asyncio.run(dispatch_payout(order, db, initiated_by="cron"))
+            if payout.status in ("sent", "completed"):
+                dispatched += 1
+            else:
+                failed += 1
+        except PayoutDispatchError as e:
+            failed += 1
+            log.warning("process_payouts: order %s - %s", order.order_number, e)
+        except Exception:  # noqa: BLE001
+            failed += 1
+            log.exception("process_payouts: unexpected error on order %s", order.order_number)
+    log.info(
+        "process_payouts: %d dispatched, %d failed, %d skipped (of %d candidates)",
+        dispatched, failed, skipped, len(candidates),
+    )
+    return dispatched
+
+
 # ───────────────────────── CLI ─────────────────────────
 
 JOBS = {
@@ -286,6 +347,7 @@ JOBS = {
     "renewal_reminders": renewal_reminders,
     "process_renewals": process_renewals,
     "inventory_reminders": inventory_reminders,
+    "process_payouts": process_payouts,
 }
 
 SUBSCRIPTION_PERIOD_DAYS = 30  # mirrors routers.subscriptions; kept here so cron is self-contained
