@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import os
 from datetime import datetime, timezone
 
 from sqlalchemy.orm import Session
@@ -21,6 +22,21 @@ from .models import (
     BusinessProfile,
 )
 from .security import hash_password
+
+
+# Seeded-account passwords, env-overridable. The defaults are intentionally
+# weak placeholder strings - they exist so `pytest` + local SQLite runs work
+# out of the box. PRODUCTION DEPLOYMENTS MUST OVERRIDE these by setting the
+# matching env vars on the host; otherwise the seeded accounts are easy
+# targets for anyone reading the public source.
+#
+# We deliberately do NOT put the production passwords here. The seed only
+# fires on an empty DB (line ~165), so once your prod is bootstrapped you
+# can rotate via the admin UI or the password-reset flow without ever
+# touching this file.
+SEED_ADMIN_PASSWORD = os.getenv("SEED_ADMIN_PASSWORD", "dev-only-admin")
+SEED_EXPORTER_PASSWORD = os.getenv("SEED_EXPORTER_PASSWORD", "dev-only-exporter")
+SEED_IMPORTER_PASSWORD = os.getenv("SEED_IMPORTER_PASSWORD", "dev-only-importer")
 
 
 def seed_default_data(db: Session) -> None:
@@ -156,7 +172,13 @@ def _seed_settings(db: Session) -> None:
 
 
 def _seed_demo_users(db: Session) -> None:
-    """Create one user per role for easy testing."""
+    """Create one user per role for easy testing.
+
+    Passwords for the seeded accounts come from env vars (SEED_ADMIN_PASSWORD,
+    SEED_EXPORTER_PASSWORD, SEED_IMPORTER_PASSWORD) with dev-only defaults for
+    local tooling. Production deployments MUST override the env vars - the
+    defaults below are not safe outside `pytest` / local SQLite.
+    """
     if db.query(User).count() > 0:
         return
 
@@ -165,7 +187,7 @@ def _seed_demo_users(db: Session) -> None:
         role=ROLE_ADMIN,
         kind="business",
         email="admin@jaratrade.com",
-        password_hash=hash_password("REDACTED-old-default"),
+        password_hash=hash_password(SEED_ADMIN_PASSWORD),
         firstname="Platform",
         lastname="Admin",
         profile_name="admin",
@@ -180,7 +202,7 @@ def _seed_demo_users(db: Session) -> None:
         role=ROLE_EXPORTER,
         kind="business",
         email="exporter@jaratrade.com",
-        password_hash=hash_password("REDACTED-old-default"),
+        password_hash=hash_password(SEED_EXPORTER_PASSWORD),
         firstname="Adaeze",
         lastname="Okafor",
         kyc_status="approved",
@@ -218,7 +240,7 @@ def _seed_demo_users(db: Session) -> None:
         role=ROLE_IMPORTER,
         kind="individual",
         email="importer@jaratrade.com",
-        password_hash=hash_password("REDACTED-old-default"),
+        password_hash=hash_password(SEED_IMPORTER_PASSWORD),
         firstname="Tunde",
         lastname="Adebayo",
         phone="+447400000001",

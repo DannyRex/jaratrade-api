@@ -1,9 +1,11 @@
 """Auth flow tests: login per role, role guard, registration, 2FA challenge."""
 import pyotp
 
+from app.seed import SEED_IMPORTER_PASSWORD
+
 
 def test_login_importer_succeeds(client):
-    r = client.post("/imp/login", json={"email": "importer@jaratrade.com", "password": "REDACTED-old-default"})
+    r = client.post("/imp/login", json={"email": "importer@jaratrade.com", "password": SEED_IMPORTER_PASSWORD})
     assert r.status_code == 200
     body = r.json()
     assert body["status"] is True
@@ -18,7 +20,7 @@ def test_login_wrong_password_401(client):
 
 def test_login_wrong_role_403(client):
     # importer credentials sent to /exp/login should fail with 403
-    r = client.post("/exp/login", json={"email": "importer@jaratrade.com", "password": "REDACTED-old-default"})
+    r = client.post("/exp/login", json={"email": "importer@jaratrade.com", "password": SEED_IMPORTER_PASSWORD})
     assert r.status_code == 403
 
 
@@ -97,7 +99,7 @@ def test_2fa_enroll_confirm_login_flow(client, importer_token):
     assert r.json()["payload"]["enabled"] is True
 
     # 3. Plain login now returns requires_2fa instead of a token
-    r = client.post("/imp/login", json={"email": "importer@jaratrade.com", "password": "REDACTED-old-default"})
+    r = client.post("/imp/login", json={"email": "importer@jaratrade.com", "password": SEED_IMPORTER_PASSWORD})
     assert r.status_code == 200
     body = r.json()["payload"]
     assert body.get("requires_2fa") is True
@@ -107,7 +109,7 @@ def test_2fa_enroll_confirm_login_flow(client, importer_token):
     code = pyotp.TOTP(secret).now()
     r = client.post("/auth/2fa/login", json={
         "email": "importer@jaratrade.com",
-        "password": "REDACTED-old-default",
+        "password": SEED_IMPORTER_PASSWORD,
         "code": code,
     })
     assert r.status_code == 200
@@ -115,5 +117,5 @@ def test_2fa_enroll_confirm_login_flow(client, importer_token):
 
     # 5. Disable 2FA so subsequent tests still work
     r = client.post("/auth/2fa/disable", headers={"Authorization": f"Bearer {importer_token}"},
-                    data={"password": "REDACTED-old-default"})
+                    data={"password": SEED_IMPORTER_PASSWORD})
     assert r.status_code == 200

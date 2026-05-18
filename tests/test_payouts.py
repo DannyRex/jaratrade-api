@@ -4,10 +4,11 @@ from datetime import datetime, timedelta, timezone
 
 from app.database import SessionLocal
 from app.models import Order, Payment, Payout, User
+from app.seed import SEED_ADMIN_PASSWORD
 
 
 def _login_as_admin(client):
-    r = client.post("/adm/login", json={"email": "admin@jaratrade.com", "password": "REDACTED-old-default"})
+    r = client.post("/adm/login", json={"email": "admin@jaratrade.com", "password": SEED_ADMIN_PASSWORD})
     assert r.status_code == 200, r.text
     return r.json()["payload"]["token"]
 

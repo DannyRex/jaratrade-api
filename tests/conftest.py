@@ -20,7 +20,12 @@ os.environ["JWT_SECRET"] = "test-secret-32-bytes-or-more-please-change"
 
 from app.database import Base, get_db  # noqa: E402
 from app.main import app  # noqa: E402
-from app.seed import seed_default_data  # noqa: E402
+from app.seed import (  # noqa: E402
+    SEED_ADMIN_PASSWORD,
+    SEED_EXPORTER_PASSWORD,
+    SEED_IMPORTER_PASSWORD,
+    seed_default_data,
+)
 
 TEST_DB_PATH = "./test_jaratrade.db"
 
@@ -67,20 +72,20 @@ def client() -> Iterator[TestClient]:
 
 @pytest.fixture
 def importer_token(client: TestClient) -> str:
-    r = client.post("/imp/login", json={"email": "importer@jaratrade.com", "password": "REDACTED-old-default"})
+    r = client.post("/imp/login", json={"email": "importer@jaratrade.com", "password": SEED_IMPORTER_PASSWORD})
     assert r.status_code == 200, r.text
     return r.json()["payload"]["token"]
 
 
 @pytest.fixture
 def exporter_token(client: TestClient) -> str:
-    r = client.post("/exp/login", json={"email": "exporter@jaratrade.com", "password": "REDACTED-old-default"})
+    r = client.post("/exp/login", json={"email": "exporter@jaratrade.com", "password": SEED_EXPORTER_PASSWORD})
     assert r.status_code == 200, r.text
     return r.json()["payload"]["token"]
 
 
 @pytest.fixture
 def admin_token(client: TestClient) -> str:
-    r = client.post("/adm/login", json={"email": "admin@jaratrade.com", "password": "REDACTED-old-default"})
+    r = client.post("/adm/login", json={"email": "admin@jaratrade.com", "password": SEED_ADMIN_PASSWORD})
     assert r.status_code == 200, r.text
     return r.json()["payload"]["token"]

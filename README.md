@@ -96,9 +96,11 @@ email-validator>=2.2
 
 | Role | Email | Password |
 |---|---|---|
-| Admin | `admin@jaratrade.com` | `REDACTED-old-default` |
-| Exporter | `exporter@jaratrade.com` | `REDACTED-old-default` |
-| Importer | `importer@jaratrade.com` | `REDACTED-old-default` |
+| Admin | `admin@jaratrade.com` | `$SEED_ADMIN_PASSWORD` env var (defaults to `dev-only-admin` for local) |
+| Exporter | `exporter@jaratrade.com` | `$SEED_EXPORTER_PASSWORD` env var (defaults to `dev-only-exporter`) |
+| Importer | `importer@jaratrade.com` | `$SEED_IMPORTER_PASSWORD` env var (defaults to `dev-only-importer`) |
+
+The defaults above are for `pytest` + local SQLite only. Production reads from env vars - rotate them once before going live, and once seeded the account passwords can be changed independently via the admin UI or password-reset flow without touching this file. (The seed only fires on an empty DB.)
 
 Plus 4 demo products on the exporter, 11 markets, 8 banks, 4 logistics partners, 5 categories and 2 plans for each role.
 
