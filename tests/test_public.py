@@ -33,6 +33,27 @@ def test_reference_data_endpoints(client):
         assert "rows" in r.json()["payload"]
 
 
+def test_categories_include_live_product_counts(client):
+    """Regression: /public/data/category used to return cat_count=0 for every
+    row because _serialize_category defaulted the count. The homepage pills
+    showed "0 products" on every category as a result.
+
+    Now we count active products from approved exporters per category, so the
+    seeded F&B (or whichever category has seed products) returns >= 1.
+    """
+    r = client.get("/public/data/category")
+    assert r.status_code == 200
+    rows = r.json()["payload"]["rows"]
+    assert len(rows) >= 1
+    # cat_count must be an int field on every row, and at least one category
+    # has products attached (seed creates at least one approved exporter +
+    # listings).
+    assert all("cat_count" in row and isinstance(row["cat_count"], int) for row in rows)
+    assert any(row["cat_count"] > 0 for row in rows), (
+        "Every category reported 0 products - the count join is broken again."
+    )
+
+
 def test_unknown_product_404(client):
     r = client.get("/public/products/does-not-exist")
     assert r.status_code == 404

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+from datetime import datetime, timezone
 from typing import List, Optional
 
 from fastapi import APIRouter, Depends, File, Form, Query, UploadFile
@@ -16,6 +17,7 @@ from ..models.user import BusinessProfile
 from ..routers.public import _serialize_product_summary
 from ..security import hash_password, verify_password
 from ..services.cloudinary import upload_file
+from ..services.email import send_template, t_order_status_update
 
 router = APIRouter(prefix="/exp", tags=["exporter"])
 
@@ -337,6 +339,20 @@ def delete_product_image(
 
 # ───────────────────────── Order updates ─────────────────────────
 
+_ALLOWED_STATUS_TRANSITIONS = {
+    # "confirmed" and "preparing" are optional bookkeeping states; exporters
+    # can skip straight from paid -> shipped if they want.
+    "paid": {"confirmed", "preparing", "shipped", "cancelled"},
+    "confirmed": {"preparing", "shipped", "cancelled"},
+    "preparing": {"shipped", "cancelled"},
+    "shipped": {"delivered", "cancelled"},
+    "delivered": set(),  # terminal from exporter side; buyer may still confirm receipt
+    "cancelled": set(),
+    "failed": set(),
+    "refunded": set(),
+}
+
+
 @router.post("/update_order")
 def update_order_status(
     user: User = Depends(require_exporter),
@@ -344,9 +360,51 @@ def update_order_status(
     order_id: str = Form(...),
     status: str = Form(...),
 ):
+    """Move an order along its lifecycle and notify the buyer.
+
+    Side effects:
+      - `order.status` is updated.
+      - `order.time_updated` is stamped (the payout cron's 7-day dispute
+        window measures from this timestamp once status == "delivered").
+      - A status-change email goes to the importer.
+    """
     order = db.get(Order, order_id)
     if not order or order.exporter_id != user.id:
         raise fail("Order not found", code=404)
+
+    status = (status or "").strip().lower()
+    allowed = _ALLOWED_STATUS_TRANSITIONS.get(order.status, set())
+    if status not in allowed and status != order.status:
+        raise fail(
+            f"Cannot move order from '{order.status}' to '{status}'",
+            code=400,
+        )
+
     order.status = status
+    order.time_updated = datetime.now(timezone.utc)
     db.commit()
+
+    # Notify the importer. Failures here shouldn't roll back the status change.
+    importer = db.get(User, order.importer_id)
+    if importer and importer.email:
+        try:
+            subject, html = t_order_status_update(
+                importer.firstname or "there",
+                order.order_number,
+                status,
+            )
+            send_template(
+                db,
+                template=f"order_status_{status}",
+                to=importer.email,
+                subject=subject,
+                html=html,
+                user_id=importer.id,
+                dedupe_key=f"order_status:{status}:{order.id}",
+            )
+        except Exception:  # noqa: BLE001
+            # Email is best-effort; don't fail the status change for SMTP blips.
+            import traceback as _tb
+            _tb.print_exc()
+
     return success({"status": status})

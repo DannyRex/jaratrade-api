@@ -447,6 +447,73 @@ def cancel_order(order_id: str, user: User = Depends(require_importer), db: Sess
     return success({"cancelled": True})
 
 
+@router.post("/order/{order_id}/confirm-receipt")
+def confirm_receipt(
+    order_id: str,
+    user: User = Depends(require_importer),
+    db: Session = Depends(get_db),
+):
+    """Buyer confirms they received the order.
+
+    This is the explicit hand-off that releases the seller's escrow
+    immediately, bypassing the 7-day dispute window. Once stamped, the
+    nightly payout cron will pick this order up on its next pass; admin
+    can also trigger the payout right away from /admin/payouts.
+
+    Guarded so the buyer can't confirm an order that's still in flight -
+    must be in 'delivered' status.
+    """
+    order = db.get(Order, order_id)
+    if not order or order.importer_id != user.id:
+        raise fail("Order not found", code=404)
+    if order.status != "delivered":
+        raise fail(
+            "You can only confirm receipt once the exporter marks the order as delivered.",
+            code=400,
+        )
+    if order.confirmed_received_at is not None:
+        # Idempotent - return current state without double-stamping.
+        return success({
+            "confirmed_received_at": order.confirmed_received_at.isoformat(),
+            "already_confirmed": True,
+        })
+
+    order.confirmed_received_at = datetime.now(timezone.utc).replace(tzinfo=None)
+    db.commit()
+
+    # Best-effort notify the seller that payout will release.
+    if order.exporter_id:
+        exporter = db.get(User, order.exporter_id)
+        if exporter and exporter.email:
+            try:
+                subject, html = t_order_status_update(
+                    exporter.firstname or "there",
+                    order.order_number,
+                    "delivered",
+                    extra=(
+                        "The buyer has confirmed receipt. Your payout will be "
+                        "released on the next nightly run."
+                    ),
+                )
+                send_template(
+                    db,
+                    template="order_receipt_confirmed_seller",
+                    to=exporter.email,
+                    subject=subject,
+                    html=html,
+                    user_id=exporter.id,
+                    dedupe_key=f"receipt_confirmed_seller:{order.id}",
+                )
+            except Exception:  # noqa: BLE001
+                import traceback as _tb
+                _tb.print_exc()
+
+    return success({
+        "confirmed_received_at": order.confirmed_received_at.isoformat(),
+        "already_confirmed": False,
+    })
+
+
 def _serialize_order(o: Order, *, include_items: bool = False) -> dict:
     out = {
         "id": o.id,
@@ -463,6 +530,9 @@ def _serialize_order(o: Order, *, include_items: bool = False) -> dict:
         "delivery_info": json.loads(o.delivery_info) if o.delivery_info else {},
         "time_created": o.time_created.isoformat(),
         "time_updated": o.time_updated.isoformat(),
+        "confirmed_received_at": (
+            o.confirmed_received_at.isoformat() if o.confirmed_received_at else None
+        ),
     }
     if include_items:
         out["items"] = [{
@@ -617,6 +687,22 @@ async def verify_pay(
             db, template="order_status_paid", to=user.email, subject=subject, html=html,
             user_id=user.id, dedupe_key=f"order_status:paid:{order.id}",
         )
+
+        # Notify the seller that the buyer has paid - this is the trigger
+        # for them to start preparing the shipment.
+        if order.exporter_id:
+            exporter = db.get(User, order.exporter_id)
+            if exporter and exporter.email:
+                subject, html = t_order_status_update(
+                    exporter.firstname or "there",
+                    order.order_number,
+                    "paid",
+                    extra=f"The buyer has paid {float(order.total):.2f} {order.currency}. Please confirm and prepare the shipment.",
+                )
+                send_template(
+                    db, template="order_paid_seller", to=exporter.email, subject=subject, html=html,
+                    user_id=exporter.id, dedupe_key=f"order_paid_seller:{order.id}",
+                )
 
         # Approaching-limit warning at 50% / 80%
         plan = _resolve_importer_plan(db, user)

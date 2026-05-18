@@ -305,10 +305,15 @@ def process_payouts(db: Session) -> int:
         dispatch_payout,
     )
 
+    # Either the buyer confirmed receipt (immediate release) or the
+    # delivered timestamp has aged past the 7-day window.
     cutoff = datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(days=DISPUTE_WINDOW_DAYS)
     candidates = (
         db.query(Order)
-        .filter(Order.status == "delivered", Order.time_updated <= cutoff)
+        .filter(
+            Order.status == "delivered",
+            (Order.time_updated <= cutoff) | (Order.confirmed_received_at.isnot(None)),
+        )
         .all()
     )
     dispatched = 0

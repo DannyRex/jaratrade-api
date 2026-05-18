@@ -1,8 +1,9 @@
 from __future__ import annotations
 
+from datetime import datetime
 from typing import List, Optional
 
-from sqlalchemy import ForeignKey, Integer, Numeric, String, Text
+from sqlalchemy import DateTime, ForeignKey, Integer, Numeric, String, Text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from ..security import new_id
@@ -27,6 +28,10 @@ class Order(Base, TimestampMixin):
     shipping_mode: Mapped[str] = mapped_column(String(20), default="logistics")  # self | logistics
     logistics_id: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
     delivery_info: Mapped[Optional[str]] = mapped_column(Text, nullable=True)  # JSON
+
+    # When the buyer explicitly confirmed receipt. Triggers immediate payout
+    # eligibility (overrides the 7-day dispute-window wait).
+    confirmed_received_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
 
     items: Mapped[List["OrderItem"]] = relationship("OrderItem", back_populates="order", cascade="all, delete-orphan")
     payments: Mapped[List["Payment"]] = relationship("Payment", back_populates="order", cascade="all, delete-orphan")

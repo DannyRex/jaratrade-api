@@ -58,8 +58,38 @@ def public_metrics(db: Session = Depends(get_db)):
 
 @router.get("/data/category")
 def list_categories(db: Session = Depends(get_db)):
-    items = db.query(Category).filter(Category.status == 1).order_by(Category.name).all()
-    rows = [_serialize_category(c) for c in items]
+    """Public category list with live product counts.
+
+    The count reflects products that are actually buyable: active listings
+    from KYC-approved, active exporters. Without this filter the homepage
+    pills always reported 0 (bug pre-v3.7) because `_serialize_category`
+    defaults the count to 0 unless given one.
+    """
+    # Count Product rows only when the chained outerjoin on User actually
+    # produced a match (i.e. seller is active + KYC-approved). Counting
+    # User.id (non-NULL) correctly drops products whose exporter fails the
+    # User filter; counting Product.id would over-count.
+    rows_with_counts = (
+        db.query(
+            Category,
+            func.count(User.id).label("cat_count"),
+        )
+        .outerjoin(
+            Product,
+            (Product.category_id == Category.id) & (Product.status == 1),
+        )
+        .outerjoin(
+            User,
+            (User.id == Product.exporter_id)
+            & (User.is_active.is_(True))
+            & (User.kyc_status == "approved"),
+        )
+        .filter(Category.status == 1)
+        .group_by(Category.id)
+        .order_by(Category.name)
+        .all()
+    )
+    rows = [_serialize_category(c, int(count)) for c, count in rows_with_counts]
     return _paged_rows(rows, len(rows))
 
 

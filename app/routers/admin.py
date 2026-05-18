@@ -13,12 +13,16 @@ from ..envelope import fail, success
 from ..models import (
     Bank,
     Category,
+    Dispute,
     ExporterPlan,
     ImporterPlan,
     LogisticsCompany,
     LogisticsRate,
     Market,
     Order,
+    OrderItem,
+    Payment,
+    Payout,
     User,
 )
 from ..routers.public import (
@@ -368,3 +372,252 @@ def get_exporter_subscriptions(_: User = Depends(require_admin), db: Session = D
             "email_verified": u.email_verified,
         })
     return success({"rows": rows, "total_length": len(rows), "page": 0, "len": len(rows)})
+
+
+# ───────────────────────── Orders (admin overview) ─────────────────────────
+
+@router.get("/orders/stats")
+def orders_stats(
+    _: User = Depends(require_admin),
+    db: Session = Depends(get_db),
+):
+    """Headline numbers for the admin orders dashboard.
+
+    Returns counts by status and GMV - the gross merchandise value
+    summed from `Order.total` for paid+ orders so we don't count
+    abandoned-cart `pending` rows.
+    """
+    from sqlalchemy import func
+
+    counts = dict(
+        db.query(Order.status, func.count(Order.id)).group_by(Order.status).all()
+    )
+    gmv_row = (
+        db.query(func.coalesce(func.sum(Order.total), 0.0))
+        .filter(Order.status.in_(["paid", "confirmed", "preparing", "shipped", "delivered"]))
+        .first()
+    )
+    gmv = float(gmv_row[0] or 0.0) if gmv_row else 0.0
+
+    pending_payouts = (
+        db.query(func.count(Order.id))
+        .filter(Order.status == "delivered")
+        .filter(~Order.id.in_(db.query(Payout.order_id)))
+        .scalar()
+    ) or 0
+
+    open_disputes = (
+        db.query(func.count(Dispute.id))
+        .filter(Dispute.status.in_(["open", "investigating"]))
+        .scalar()
+    ) or 0
+
+    return success({
+        "total_orders": sum(counts.values()),
+        "by_status": {k: int(v) for k, v in counts.items()},
+        "gmv": f"{gmv:.2f}",
+        "pending_payouts": int(pending_payouts),
+        "open_disputes": int(open_disputes),
+    })
+
+
+@router.get("/orders")
+def list_admin_orders(
+    status: Optional[str] = Query(default=None),
+    q: Optional[str] = Query(default=None, description="Search order #, buyer email, or seller business"),
+    p: int = Query(default=0, ge=0),
+    len_: int = Query(default=25, ge=1, le=100, alias="len"),
+    _: User = Depends(require_admin),
+    db: Session = Depends(get_db),
+):
+    """Paginated orders list enriched with buyer, seller, payment + payout
+    state.
+
+    This replaces the side-effect behaviour of `GET /adm/logistics` when
+    filter params were passed - that endpoint goes back to returning the
+    logistics-partner list. Frontends should call this for the orders
+    overview.
+    """
+    from sqlalchemy import func, or_, select
+
+    query = db.query(Order)
+    if status:
+        query = query.filter(Order.status == status)
+    if q:
+        like = f"%{q.strip()}%"
+        # Join in users + business_profiles only when searching, so the
+        # default list stays cheap.
+        from ..models.user import BusinessProfile
+        buyer_match = select(User.id).where(User.email.ilike(like))
+        seller_match = select(BusinessProfile.user_id).where(
+            BusinessProfile.business_name.ilike(like)
+        )
+        query = query.filter(
+            or_(
+                Order.order_number.ilike(like),
+                Order.id.ilike(like),
+                Order.importer_id.in_(buyer_match),
+                Order.exporter_id.in_(seller_match),
+            )
+        )
+
+    total = query.count()
+    orders = (
+        query.order_by(desc(Order.time_created))
+        .offset(p * len_)
+        .limit(len_)
+        .all()
+    )
+
+    # Bulk-load related rows so we don't N+1 on the response.
+    order_ids = [o.id for o in orders]
+    user_ids = list({o.importer_id for o in orders} | {o.exporter_id for o in orders if o.exporter_id})
+    users = {u.id: u for u in db.query(User).filter(User.id.in_(user_ids)).all()} if user_ids else {}
+    item_counts = dict(
+        db.query(OrderItem.order_id, func.count(OrderItem.id))
+        .filter(OrderItem.order_id.in_(order_ids))
+        .group_by(OrderItem.order_id)
+        .all()
+    ) if order_ids else {}
+    payments_by_order: dict[str, str] = {}
+    if order_ids:
+        for pay in db.query(Payment).filter(Payment.order_id.in_(order_ids)).all():
+            # Prefer "successful" over any pending row for a given order.
+            cur = payments_by_order.get(pay.order_id)
+            if cur != "successful":
+                payments_by_order[pay.order_id] = pay.status
+    payouts_by_order = {
+        po.order_id: po.status for po in (
+            db.query(Payout).filter(Payout.order_id.in_(order_ids)).all() if order_ids else []
+        )
+    }
+    disputed = set()
+    if order_ids:
+        for d in db.query(Dispute).filter(Dispute.order_id.in_(order_ids)).all():
+            disputed.add(d.order_id)
+
+    rows = []
+    for o in orders:
+        buyer = users.get(o.importer_id)
+        seller = users.get(o.exporter_id) if o.exporter_id else None
+        seller_biz = seller.business if seller else None
+        rows.append({
+            "id": o.id,
+            "order_id": o.order_number,
+            "status": o.status,
+            "total": f"{float(o.total):.2f}",
+            "currency": o.currency,
+            "items_count": int(item_counts.get(o.id, 0)),
+            "time_created": o.time_created.isoformat(),
+            "time_updated": o.time_updated.isoformat(),
+            "confirmed_received_at": (
+                o.confirmed_received_at.isoformat() if o.confirmed_received_at else None
+            ),
+            "buyer": {
+                "id": buyer.id if buyer else None,
+                "name": (buyer.fullname if buyer else None) or (buyer.email if buyer else None),
+                "email": buyer.email if buyer else None,
+            },
+            "seller": {
+                "id": seller.id if seller else None,
+                "business_name": seller_biz.business_name if seller_biz else None,
+                "email": seller.email if seller else None,
+            },
+            "payment_status": payments_by_order.get(o.id),
+            "payout_status": payouts_by_order.get(o.id),  # None | pending | sent | completed | failed
+            "has_dispute": o.id in disputed,
+        })
+
+    return success({"rows": rows, "total_length": total, "page": p, "len": len_})
+
+
+@router.get("/orders/{order_id}")
+def get_admin_order(
+    order_id: str,
+    _: User = Depends(require_admin),
+    db: Session = Depends(get_db),
+):
+    """Full detail for the admin order drawer.
+
+    Includes everything from the list endpoint plus line items, delivery
+    info, all payments + all payouts so admin can audit a single order in
+    one shot without juggling multiple endpoints.
+    """
+    import json as _json
+
+    order = db.get(Order, order_id)
+    if not order:
+        # Allow lookup by order_number as a convenience.
+        order = db.query(Order).filter(Order.order_number == order_id).first()
+    if not order:
+        raise fail("Order not found", code=404)
+
+    buyer = db.get(User, order.importer_id) if order.importer_id else None
+    seller = db.get(User, order.exporter_id) if order.exporter_id else None
+    seller_biz = seller.business if seller else None
+
+    items = db.query(OrderItem).filter(OrderItem.order_id == order.id).all()
+    payments = db.query(Payment).filter(Payment.order_id == order.id).all()
+    payouts = db.query(Payout).filter(Payout.order_id == order.id).all()
+    dispute = db.query(Dispute).filter(Dispute.order_id == order.id).first()
+
+    return success({
+        "id": order.id,
+        "order_id": order.order_number,
+        "status": order.status,
+        "total": f"{float(order.total):.2f}",
+        "platform_fee": f"{float(order.platform_fee):.2f}",
+        "logistics_fee": f"{float(order.logistics_fee):.2f}",
+        "currency": order.currency,
+        "shipping_mode": order.shipping_mode,
+        "logistics_id": order.logistics_id,
+        "delivery_info": _json.loads(order.delivery_info) if order.delivery_info else {},
+        "time_created": order.time_created.isoformat(),
+        "time_updated": order.time_updated.isoformat(),
+        "confirmed_received_at": (
+            order.confirmed_received_at.isoformat() if order.confirmed_received_at else None
+        ),
+        "buyer": {
+            "id": buyer.id if buyer else None,
+            "name": (buyer.fullname if buyer else None) or (buyer.email if buyer else None),
+            "email": buyer.email if buyer else None,
+            "phone": buyer.phone if buyer else None,
+        },
+        "seller": {
+            "id": seller.id if seller else None,
+            "business_name": seller_biz.business_name if seller_biz else None,
+            "email": seller.email if seller else None,
+            "phone": seller.phone if seller else None,
+        },
+        "items": [{
+            "id": it.id,
+            "product_id": it.product_id,
+            "product_name": it.product_name,
+            "quantity": it.quantity,
+            "unit_price": f"{float(it.unit_price):.2f}",
+            "subtotal": f"{float(it.subtotal):.2f}",
+        } for it in items],
+        "payments": [{
+            "id": p.id,
+            "tx_ref": p.tx_ref,
+            "amount": f"{float(p.amount):.2f}",
+            "currency": p.currency,
+            "status": p.status,
+            "provider": p.provider,
+            "time_created": p.time_created.isoformat(),
+        } for p in payments],
+        "payouts": [{
+            "id": po.id,
+            "reference": po.reference,
+            "amount": f"{float(po.amount):.2f}",
+            "currency": po.currency,
+            "status": po.status,
+            "failure_reason": po.failure_reason,
+            "time_created": po.time_created.isoformat(),
+        } for po in payouts],
+        "dispute": {
+            "id": dispute.id,
+            "status": dispute.status,
+            "reason": dispute.reason,
+        } if dispute else None,
+    })

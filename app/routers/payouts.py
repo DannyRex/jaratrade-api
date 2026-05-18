@@ -96,20 +96,47 @@ def list_payouts(
     return success({"rows": out, "total_length": total, "page": p, "len": len_})
 
 
+def _is_payout_eligible(order: Order, now: Optional[datetime] = None) -> bool:
+    """Return True iff this order is ready to pay the seller.
+
+    Two paths to eligibility:
+      1. Buyer explicitly confirmed receipt (immediate release).
+      2. Order has sat in 'delivered' status for >= DISPUTE_WINDOW_DAYS.
+
+    Either path waives the other; the moment either becomes true the order
+    is eligible.
+    """
+    if order.status != "delivered":
+        return False
+    if order.confirmed_received_at is not None:
+        return True
+    if order.time_updated is None:
+        return False
+    now = now or datetime.now(timezone.utc).replace(tzinfo=None)
+    cutoff = now - timedelta(days=DISPUTE_WINDOW_DAYS)
+    return order.time_updated <= cutoff
+
+
 @router.get("/eligible")
 def eligible_for_payout(
     _: User = Depends(require_admin),
     db: Session = Depends(get_db),
 ):
-    """Orders that are delivered, past the dispute window, with no payout yet.
+    """Orders that are delivered, past the dispute window (or confirmed
+    received by the buyer), with no payout yet.
 
     Returns a payable preview - amount, seller, banking details, etc - so
     admin can review before dispatching.
     """
-    cutoff = datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(days=DISPUTE_WINDOW_DAYS)
+    now = datetime.now(timezone.utc).replace(tzinfo=None)
+    cutoff = now - timedelta(days=DISPUTE_WINDOW_DAYS)
+    # Either past the dispute window OR buyer-confirmed.
     delivered = (
         db.query(Order)
-        .filter(Order.status == "delivered", Order.time_updated <= cutoff)
+        .filter(
+            Order.status == "delivered",
+            (Order.time_updated <= cutoff) | (Order.confirmed_received_at.isnot(None)),
+        )
         .order_by(desc(Order.time_updated))
         .all()
     )
@@ -175,13 +202,15 @@ async def dispatch_payout(
             f"Order must be 'delivered' (currently '{order.status}')", code=400,
         )
 
-    cutoff = datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(days=DISPUTE_WINDOW_DAYS)
-    if order.time_updated > cutoff:
-        raise PayoutDispatchError(
-            "Dispute window still open. Earliest payout: "
-            f"{(order.time_updated + timedelta(days=DISPUTE_WINDOW_DAYS)).strftime('%Y-%m-%d')}",
-            code=400,
-        )
+    # Buyer confirmation short-circuits the dispute window.
+    if order.confirmed_received_at is None:
+        cutoff = datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(days=DISPUTE_WINDOW_DAYS)
+        if order.time_updated > cutoff:
+            raise PayoutDispatchError(
+                "Dispute window still open. Earliest payout: "
+                f"{(order.time_updated + timedelta(days=DISPUTE_WINDOW_DAYS)).strftime('%Y-%m-%d')}",
+                code=400,
+            )
 
     if db.query(Payout).filter(Payout.order_id == order.id).first():
         raise PayoutDispatchError("Payout already initiated for this order", code=409)
