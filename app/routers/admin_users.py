@@ -19,7 +19,7 @@ from ..deps import require_admin
 from ..envelope import fail, success
 from ..models import Bank, User, BusinessProfile
 from ..services.email import send_template, t_account_activated, t_account_rejected
-from ..services.flutterwave import create_subaccount
+from ..services.flutterwave import FlutterwaveError, create_subaccount
 
 router = APIRouter(prefix="/adm", tags=["admin"])
 settings = get_settings()
@@ -179,6 +179,10 @@ async def kyc_approve(user_id: str, _: User = Depends(require_admin), db: Sessio
                     u.flw_subaccount_payload = json.dumps(resp)
                     db.commit()
                     db.refresh(u)
+            except FlutterwaveError as e:
+                # Persist FLW's complaint for admin diagnostics; don't block.
+                u.flw_subaccount_payload = json.dumps({"error": str(e), "body": e.body})
+                db.commit()
             except Exception:  # noqa: BLE001
                 # Don't block approval on a provisioning failure; admin can retry.
                 traceback.print_exc()
@@ -230,9 +234,12 @@ async def reprovision_subaccount(
             business_mobile=u.phone or "0000000000",
             country=u.country or "NG",
         )
+    except FlutterwaveError as e:
+        # Surface FLW's own error message rather than a Python repr.
+        raise fail(f"Flutterwave rejected the request: {e.status_code} - {e.body}", code=502)
     except Exception as e:  # noqa: BLE001
         traceback.print_exc()
-        raise fail(f"Flutterwave rejected the request: {e!r}", code=502)
+        raise fail(f"Flutterwave call failed: {e!r}", code=502)
 
     sub_id = resp.get("subaccount_id") or resp.get("id")
     if not sub_id:

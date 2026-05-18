@@ -182,6 +182,60 @@ async def resolve_account(*, account_number: str, account_bank: str) -> Dict[str
         return body.get("data") or {"status": "failed", "raw": body}
 
 
+# ISO-3166-1 alpha-2 codes are what Flutterwave wants. We normalise common
+# free-form country strings the rest of our app uses ("Nigeria", "United
+# Kingdom", etc) into these codes before hitting FLW. Unknown values are
+# passed through untouched so they surface as a clear FLW error rather than
+# silently mapping to the wrong country.
+_COUNTRY_ISO = {
+    "nigeria": "NG", "ng": "NG",
+    "united kingdom": "GB", "uk": "GB", "gb": "GB",
+    "united states": "US", "usa": "US", "us": "US",
+    "ghana": "GH", "kenya": "KE", "south africa": "ZA",
+}
+
+
+def _iso_country(value: Optional[str]) -> str:
+    if not value:
+        return "NG"
+    key = value.strip().lower()
+    if len(key) == 2:
+        return key.upper()
+    return _COUNTRY_ISO.get(key, value)
+
+
+class FlutterwaveError(RuntimeError):
+    """Raised when Flutterwave returns a non-2xx. Carries the parsed response
+    body so callers can surface a useful error to the admin."""
+
+    def __init__(self, status_code: int, body: Any):
+        self.status_code = status_code
+        self.body = body
+        # Build a short, useful summary message - prefer FLW's `message`
+        # field over the raw text dump.
+        msg = body.get("message") if isinstance(body, dict) else str(body)
+        super().__init__(f"Flutterwave {status_code}: {msg}")
+
+
+async def _flw_post(path: str, payload: Dict[str, Any]) -> Dict[str, Any]:
+    """POST to Flutterwave's API with our standard auth + error wrapping.
+
+    Raises FlutterwaveError with the parsed body on non-2xx. Returns the
+    `data` block from the response on success.
+    """
+    headers = {"Authorization": f"Bearer {settings.flw_secret_key}"}
+    async with httpx.AsyncClient(timeout=20.0, headers=headers) as client:
+        resp = await client.post(f"https://api.flutterwave.com{path}", json=payload)
+        if resp.status_code >= 400:
+            try:
+                body = resp.json()
+            except Exception:  # noqa: BLE001
+                body = resp.text
+            raise FlutterwaveError(resp.status_code, body)
+        body = resp.json()
+        return body.get("data") or {"status": body.get("status"), "raw": body}
+
+
 async def create_subaccount(
     *,
     account_bank: str,
@@ -200,6 +254,8 @@ async def create_subaccount(
     `account_bank` arg is Flutterwave's bank code (e.g. "044" for Access),
     not our internal Bank UUID - the caller is responsible for the lookup.
     """
+    iso = _iso_country(country)
+
     if not settings.flw_secret_key:
         # Dev-fallback: synthesise a plausible-looking subaccount id so the
         # rest of the flow can be exercised without prod credentials.
@@ -212,26 +268,21 @@ async def create_subaccount(
             "business_name": business_name,
             "split_value": split_value,
             "split_type": split_type,
-            "country": country,
+            "country": iso,
             "_dev_fallback": True,
         }
 
-    headers = {"Authorization": f"Bearer {settings.flw_secret_key}"}
     payload = {
         "account_bank": account_bank,
         "account_number": account_number,
         "business_name": business_name,
         "business_email": business_email,
         "business_mobile": business_mobile,
-        "country": country,
+        "country": iso,
         "split_value": split_value,
         "split_type": split_type,
     }
-    async with httpx.AsyncClient(timeout=20.0, headers=headers) as client:
-        resp = await client.post("https://api.flutterwave.com/v3/subaccounts", json=payload)
-        resp.raise_for_status()
-        body = resp.json()
-        return body.get("data") or {"status": "failed", "raw": body}
+    return await _flw_post("/v3/subaccounts", payload)
 
 
 async def get_subaccount(subaccount_id: str) -> Dict[str, Any]:
@@ -271,7 +322,6 @@ async def transfer_to_bank(
             "currency": currency,
             "_dev_fallback": True,
         }
-    headers = {"Authorization": f"Bearer {settings.flw_secret_key}"}
     payload: Dict[str, Any] = {
         "account_bank": account_bank,
         "account_number": account_number,
@@ -282,10 +332,7 @@ async def transfer_to_bank(
     }
     if beneficiary_name:
         payload["beneficiary_name"] = beneficiary_name
-    async with httpx.AsyncClient(timeout=30.0, headers=headers) as client:
-        resp = await client.post("https://api.flutterwave.com/v3/transfers", json=payload)
-        resp.raise_for_status()
-        return resp.json().get("data") or {"status": "failed", "raw": resp.json()}
+    return await _flw_post("/v3/transfers", payload)
 
 
 async def refund_payment(*, flw_transaction_id: str, amount: Optional[float] = None) -> Dict[str, Any]:

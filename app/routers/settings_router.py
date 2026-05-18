@@ -107,7 +107,7 @@ async def update_commission_account(
     }
 
     if auto_provision and bank_code:
-        from ..services.flutterwave import create_subaccount
+        from ..services.flutterwave import FlutterwaveError, create_subaccount
         try:
             resp = await create_subaccount(
                 account_bank=bank_code,
@@ -121,6 +121,8 @@ async def update_commission_account(
             if sub_id:
                 payload["flw_subaccount_id"] = str(sub_id)
                 payload["flw_provisioned_at"] = datetime.now(timezone.utc).isoformat()
+        except FlutterwaveError as e:
+            payload["flw_provision_error"] = f"{e.status_code}: {e.body}"
         except Exception as e:  # noqa: BLE001
             payload["flw_provision_error"] = repr(e)
 

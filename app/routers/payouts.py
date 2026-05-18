@@ -30,7 +30,7 @@ from ..deps import require_admin
 from ..envelope import fail, success
 from ..models import Bank, Dispute, Order, Payment, Payout, User
 from ..routers.settings_router import read_commission_rate
-from ..services.flutterwave import transfer_to_bank
+from ..services.flutterwave import FlutterwaveError, transfer_to_bank
 
 router = APIRouter(prefix="/adm/payouts", tags=["admin-payouts"])
 
@@ -224,13 +224,19 @@ async def send_payout(
             reference=reference,
             beneficiary_name=seller.business.business_name or seller.fullname,
         )
+    except FlutterwaveError as e:
+        payout.status = "failed"
+        payout.failure_reason = f"{e.status_code}: {e.body}"
+        db.commit()
+        db.refresh(payout)
+        raise fail(f"Flutterwave rejected the transfer: {e.status_code} - {e.body}", code=502)
     except Exception as e:  # noqa: BLE001
         traceback.print_exc()
         payout.status = "failed"
         payout.failure_reason = repr(e)
         db.commit()
         db.refresh(payout)
-        raise fail(f"Flutterwave rejected the transfer: {e!r}", code=502)
+        raise fail(f"Flutterwave call failed: {e!r}", code=502)
 
     payout.status = "sent" if str(resp.get("status", "")).upper() in ("NEW", "PENDING", "QUEUED", "SUCCESSFUL", "COMPLETED") else "failed"
     payout.provider_payload = json.dumps(resp)
