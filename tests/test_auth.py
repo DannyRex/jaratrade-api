@@ -43,6 +43,46 @@ def test_register_importer_creates_account(client):
     assert r.json()["status"] is True
 
 
+def test_register_importer_slim_signup_no_address_or_dob(client):
+    """Regression: the v3.7 slim signup form only sends the six essentials -
+    address and DOB move to the post-signup profile flow. The API must accept
+    that shape and create the account anyway."""
+    r = client.put("/imp/register", data={
+        "type": "individual",
+        "firstname": "Slim", "lastname": "User", "phone": "+447400000888",
+        "email": "slim-importer@example.com", "password": "password123",
+        "profile_name": "slim-user",
+    })
+    assert r.status_code == 200, r.text
+    assert r.json()["status"] is True
+
+
+def test_register_exporter_slim_signup_no_business_or_address(client):
+    """Same as above but for exporters - business details + KYC docs all
+    move to the post-signup profile flow. The User row should be created,
+    the BusinessProfile row deferred until the exporter fills it in."""
+    from app.database import SessionLocal
+    from app.models import User
+
+    r = client.put("/exp/register", data={
+        "firstname": "Slim", "lastname": "Exporter", "phone": "+2348100000777",
+        "email": "slim-exporter@example.com", "password": "password123",
+        "profile_name": "slim-exp",
+    })
+    assert r.status_code == 200, r.text
+    assert r.json()["status"] is True
+
+    with SessionLocal() as db:
+        user = db.query(User).filter(User.email == "slim-exporter@example.com").first()
+        assert user is not None
+        # Exporters still gated on KYC before they can transact
+        assert user.is_active is False
+        assert user.kyc_status == "pending"
+        # BusinessProfile not created at slim signup - that comes via the
+        # profile-update endpoint once the exporter fills in business details
+        assert user.business is None
+
+
 def test_2fa_enroll_confirm_login_flow(client, importer_token):
     # 1. Enroll
     r = client.post("/auth/2fa/enroll", headers={"Authorization": f"Bearer {importer_token}"})

@@ -144,8 +144,12 @@ def register_importer(
     email: EmailStr = Form(...),
     password: str = Form(..., min_length=8),
     profile_name: str = Form(...),
-    address: str = Form(...),
-    dob: str = Form(...),
+    # Address + DOB used to be required at signup. They moved to the
+    # post-signup profile flow ("slim signup" v3.7), so the slim form
+    # only sends the 6 essentials. We keep them as optional inputs so
+    # legacy clients that still send them continue to work.
+    address: Optional[str] = Form(default=None),
+    dob: Optional[str] = Form(default=None),
     business_name: Optional[str] = Form(default=None),
     business_reg_num: Optional[str] = Form(default=None),
     business_email: Optional[str] = Form(default=None),
@@ -189,34 +193,39 @@ def register_importer(
 @router.put("/exp/register")
 def register_exporter(
     db: Session = Depends(get_db),
+    # Six essentials collected on the slim v3.7 signup form ─────────────────
     firstname: str = Form(...),
     lastname: str = Form(...),
     phone: str = Form(...),
     email: EmailStr = Form(...),
     password: str = Form(..., min_length=8),
     profile_name: str = Form(...),
-    business_name: str = Form(...),
-    business_reg_num: str = Form(...),
-    business_email: str = Form(...),
-    business_address: str = Form(...),
-    duration_in_business: str = Form(...),
-    annual_turnover: str = Form(...),
-    valid_ID: str = Form(...),
-    business_type: str = Form(...),
+    # ── Everything below is deferred to the post-signup profile / KYC flow.
+    # All optional so the slim signup form (which only sends the six above)
+    # works. KYC review still gates `is_active`, so an exporter that hasn't
+    # filled these in can't transact regardless.
+    business_name: Optional[str] = Form(default=None),
+    business_reg_num: Optional[str] = Form(default=None),
+    business_email: Optional[str] = Form(default=None),
+    business_address: Optional[str] = Form(default=None),
+    duration_in_business: Optional[str] = Form(default=None),
+    annual_turnover: Optional[str] = Form(default=None),
+    valid_ID: Optional[str] = Form(default=None),
+    business_type: Optional[str] = Form(default=None),
     business_country: Optional[str] = Form(default=None),
     market_locations: Optional[str] = Form(default=None),
     bank_id: Optional[str] = Form(default=None),
     account_name: Optional[str] = Form(default=None),
     account_number: Optional[str] = Form(default=None),
-    TIN: str = Form(...),
-    dob: str = Form(...),
-    country: str = Form(...),
-    address: str = Form(...),
+    TIN: Optional[str] = Form(default=None),
+    dob: Optional[str] = Form(default=None),
+    country: Optional[str] = Form(default=None),
+    address: Optional[str] = Form(default=None),
     type: str = Form(default="business"),  # ignored - exporters are always business
 ):
     _check_unique_email(db, email)
     try:
-        duration_int = int(duration_in_business)
+        duration_int = int(duration_in_business) if duration_in_business else None
     except (TypeError, ValueError):
         duration_int = None
 
@@ -239,22 +248,28 @@ def register_exporter(
     db.add(user)
     db.flush()
 
-    db.add(BusinessProfile(
-        user_id=user.id,
-        business_name=business_name,
-        business_email=business_email,
-        business_address=business_address,
-        business_reg_number=business_reg_num,
-        business_type=business_type,
-        business_country=business_country,
-        annual_turnover=annual_turnover,
-        duration_in_business=duration_int,
-        tin=TIN,
-        bank_id=bank_id,
-        account_name=account_name,
-        account_number=account_number,
-        valid_identification=valid_ID,
-    ))
+    # Only create the BusinessProfile if the exporter actually filled in
+    # business details at signup. Otherwise we leave it null; the post-
+    # signup profile-update endpoint will lazy-create it the moment they
+    # save business details. business_name is the NOT NULL field on BP,
+    # so it's the gate.
+    if business_name:
+        db.add(BusinessProfile(
+            user_id=user.id,
+            business_name=business_name,
+            business_email=business_email,
+            business_address=business_address,
+            business_reg_number=business_reg_num,
+            business_type=business_type,
+            business_country=business_country,
+            annual_turnover=annual_turnover,
+            duration_in_business=duration_int,
+            tin=TIN,
+            bank_id=bank_id,
+            account_name=account_name,
+            account_number=account_number,
+            valid_identification=valid_ID,
+        ))
     user.kyc_status = "pending"
     db.commit()
     _send_verification_email(db, user)

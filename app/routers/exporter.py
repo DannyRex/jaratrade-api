@@ -95,10 +95,27 @@ def update_profile(
                  "country": country, "profile_name": profile_name}.items():
         if v is not None:
             setattr(user, k, v)
+
+    # Lazy-create the BusinessProfile: slim-signup exporters won't have
+    # one yet, but the moment they fill in business details from their
+    # profile screen we create the row. business_name is the only
+    # NOT NULL field on the table, so it's the gate.
+    biz_updates = {
+        "business_name": business_name,
+        "business_email": business_email,
+        "business_address": business_address,
+    }
     if user.business:
-        for k, v in {"business_name": business_name, "business_email": business_email, "business_address": business_address}.items():
+        for k, v in biz_updates.items():
             if v is not None:
                 setattr(user.business, k, v)
+    elif business_name:
+        db.add(BusinessProfile(
+            user_id=user.id,
+            business_name=business_name,
+            business_email=business_email,
+            business_address=business_address,
+        ))
     db.commit()
     return success({"updated": True})
 
