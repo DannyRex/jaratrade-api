@@ -27,10 +27,75 @@ def test_cart_sync_replaces_items(client, importer_token):
     """POST /imp/cart/sync should replace the current cart with the supplied items."""
     r = client.get("/public/products", params={"len": 2})
     pids = [p["id"] for p in r.json()["payload"]["data"][:2]]
+    # Quantity 2 because seeded products carry min_order_quantity=2 and the
+    # sync endpoint enforces MOQ same as the explicit add-to-cart endpoint.
     r = client.post("/imp/cart/sync", headers={"Authorization": f"Bearer {importer_token}"},
-                    json={"items": [{"product_id": pid, "quantity": 1} for pid in pids], "replace": True})
+                    json={"items": [{"product_id": pid, "quantity": 2} for pid in pids], "replace": True})
     assert r.status_code == 200
     assert len(r.json()["payload"]["items"]) == 2
+
+
+def test_cart_sync_rejects_below_moq(client, importer_token):
+    """Regression: /cart/sync used to skip the MOQ check that /cart enforces,
+    letting buyers sneak a quantity-1 line item past the validation."""
+    r = client.get("/public/products", params={"len": 1})
+    pid = r.json()["payload"]["data"][0]["id"]
+    r = client.post(
+        "/imp/cart/sync",
+        headers={"Authorization": f"Bearer {importer_token}"},
+        json={"items": [{"product_id": pid, "quantity": 1}], "replace": True},
+    )
+    assert r.status_code == 400, r.text
+    assert "minimum order quantity" in r.text.lower()
+
+
+def test_create_order_rejects_below_moq_in_cart(client, importer_token):
+    """Final-defence MOQ check in /imp/order. We construct a cart item
+    directly in the DB at quantity=1 (bypassing both /cart and /cart/sync),
+    then try to check out - the order endpoint should refuse.
+
+    Self-contained: creates its own cart row, cleans up at the end so the
+    orphaned quantity-1 line item doesn't pollute later tests' /imp/cart
+    lookups."""
+    from app.database import SessionLocal
+    from app.models import Cart, CartItem, Product, User
+
+    cart_id = None
+    try:
+        with SessionLocal() as db:
+            user = db.query(User).filter(User.email == "importer@jaratrade.com").first()
+            prod = db.query(Product).filter(Product.min_order_quantity > 1).first()
+            assert prod is not None, "Seed should include at least one MOQ>1 product"
+            cart = Cart(importer_id=user.id, status="probe")  # custom status so it isn't an active cart
+            db.add(cart)
+            db.flush()
+            db.add(CartItem(
+                cart_id=cart.id,
+                product_id=prod.id,
+                quantity=1,  # below MOQ
+                unit="cartons",
+                unit_price=prod.price,
+                subtotal=float(prod.price),
+            ))
+            db.commit()
+            cart_id = cart.id
+
+        r = client.post(
+            "/imp/order",
+            headers={"Authorization": f"Bearer {importer_token}"},
+            data={"cart_id": cart_id, "delivery_info": '{"address":"Test"}'},
+        )
+        assert r.status_code == 400, r.text
+        assert "moq" in r.text.lower() or "minimum order quantity" in r.text.lower()
+    finally:
+        if cart_id:
+            with SessionLocal() as db:
+                c = db.get(Cart, cart_id)
+                if c:
+                    for it in list(c.items):
+                        db.delete(it)
+                    db.delete(c)
+                    db.commit()
 
 
 def test_create_order_then_init_payment(client, importer_token):

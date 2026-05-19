@@ -223,13 +223,28 @@ def sync_cart(
         if not prod or prod.status != 1:
             continue  # skip silently - the product may have been delisted
 
+        # MOQ guard: every path that lands items in the cart should honour
+        # the exporter's minimum order quantity. Without this check here,
+        # cart/sync was a bypass around the explicit POST /cart MOQ check.
+        moq = int(prod.min_order_quantity or 1)
         existing = db.query(CartItem).filter(
             CartItem.cart_id == cart.id, CartItem.product_id == item.product_id
         ).first()
         if existing and not payload.replace:
-            existing.quantity += item.quantity
+            new_qty = existing.quantity + item.quantity
+            if new_qty < moq:
+                raise fail(
+                    f"{prod.product_name}: minimum order quantity is {moq}",
+                    code=400,
+                )
+            existing.quantity = new_qty
             existing.subtotal = float(existing.unit_price) * existing.quantity
         elif not existing:
+            if item.quantity < moq:
+                raise fail(
+                    f"{prod.product_name}: minimum order quantity is {moq}",
+                    code=400,
+                )
             db.add(CartItem(
                 cart_id=cart.id,
                 product_id=item.product_id,
@@ -324,16 +339,27 @@ def create_order(
     # "out of stock". An earlier version of this check guarded `> 0` because
     # untracked products defaulted to 0 - that's no longer true.
     insufficient = []
+    moq_violations = []
     for item in cart.items:
         prod = db.get(Product, item.product_id)
         if prod is None or prod.status != 1:
             insufficient.append(f"{item.product_id}: no longer available")
             continue
+        # Final-defence MOQ check. The cart-add path validates this, but
+        # this endpoint is also a public surface, so we re-verify here in
+        # case the cart was assembled via /cart/sync or seeded historically.
+        moq = int(prod.min_order_quantity or 1)
+        if item.quantity < moq:
+            moq_violations.append(
+                f"{prod.product_name}: minimum order quantity is {moq} (you have {item.quantity})"
+            )
         stock = prod.stock_quantity or 0
         if stock <= 0:
             insufficient.append(f"{prod.product_name}: out of stock")
         elif item.quantity > stock:
             insufficient.append(f"{prod.product_name}: only {stock} in stock (you wanted {item.quantity})")
+    if moq_violations:
+        raise fail("Cart fails MOQ check: " + "; ".join(moq_violations), code=400)
     if insufficient:
         raise fail("Stock check failed: " + "; ".join(insufficient), code=409)
 
