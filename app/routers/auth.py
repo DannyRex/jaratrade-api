@@ -121,7 +121,7 @@ def _send_verification_email(db: Session, user: User) -> str:
     db.commit()
     s = get_settings()
     link = f"{s.site_url}/auth/verify-email?code={code}&role={user.role}"
-    subject, html = t_welcome_verify(user.firstname or "there", link)
+    subject, html = t_welcome_verify(user.firstname or "there", link, code)
     send_template(
         db,
         template="welcome_verify",

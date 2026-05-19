@@ -177,11 +177,20 @@ def _wrap(body: str) -> str:
     return f"""<!doctype html><html><body style="font-family:system-ui,Arial,sans-serif;color:#1a1a1a;max-width:560px;margin:auto;padding:24px;line-height:1.6">{body}<hr style="margin:32px 0;border:none;border-top:1px solid #e5e7eb"><p style="font-size:12px;color:#6b7280">Jaratrade Ltd</p></body></html>"""
 
 
-def t_welcome_verify(name: str, verify_link: str) -> tuple[str, str]:
+def t_welcome_verify(name: str, verify_link: str, code: str = "") -> tuple[str, str]:
+    """Verification email. Renders both a click-to-verify button (link) and
+    the raw code, because the /auth/verify-email page offers a paste-the-code
+    fallback for cross-device flows (e.g. read email on phone, verify on
+    desktop). Without showing the code, that fallback was a dead UI promise.
+    """
     subject = "Welcome to Jaratrade! Please verify your email"
+    code_block = f"""
+    <p style="margin-top:18px;font-size:14px;color:#374151">Or if the button doesn't work, paste this code into the verification page:</p>
+    <p style="font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:13px;background:#f3f4f6;padding:10px 14px;border-radius:6px;border:1px solid #e5e7eb;word-break:break-all;display:inline-block">{code}</p>""" if code else ""
     body = f"""<p>Hello {name or 'there'},</p>
     <p>Thank you for registering with Jaratrade! To complete your registration, please verify your email by clicking the link below:</p>
     <p><a href="{verify_link}" style="display:inline-block;background:#2563eb;color:white;padding:10px 18px;border-radius:6px;text-decoration:none">Verify my email</a></p>
+    {code_block}
     <p>If you didn't sign up, you can safely ignore this message.</p>
     <p>Best regards,<br>The Jaratrade Team</p>"""
     return subject, _wrap(body)
