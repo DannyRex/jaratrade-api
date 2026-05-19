@@ -256,6 +256,27 @@ def t_account_under_review(name: str) -> tuple[str, str]:
     return subject, _wrap(body)
 
 
+def t_new_exporter_pending_review_admin(
+    business_name: str,
+    business_email: str,
+    contact_name: str,
+    contact_email: str,
+    review_link: str,
+) -> tuple[str, str]:
+    """Admin-side alert for a fresh exporter signup that needs KYC review."""
+    subject = f"New exporter pending KYC review: {business_name or contact_name or 'unknown'}"
+    body = f"""<p>A new exporter just signed up and is awaiting KYC review.</p>
+    <table style="border-collapse:collapse;margin-top:8px">
+      <tr><td style="padding:6px 12px;border:1px solid #e5e7eb">Business</td><td style="padding:6px 12px;border:1px solid #e5e7eb">{business_name or '(not yet provided)'}</td></tr>
+      <tr><td style="padding:6px 12px;border:1px solid #e5e7eb">Business email</td><td style="padding:6px 12px;border:1px solid #e5e7eb">{business_email or '(not yet provided)'}</td></tr>
+      <tr><td style="padding:6px 12px;border:1px solid #e5e7eb">Contact</td><td style="padding:6px 12px;border:1px solid #e5e7eb">{contact_name or '(not provided)'}</td></tr>
+      <tr><td style="padding:6px 12px;border:1px solid #e5e7eb">Contact email</td><td style="padding:6px 12px;border:1px solid #e5e7eb">{contact_email or '(not provided)'}</td></tr>
+    </table>
+    <p style="margin-top:18px"><a href="{review_link}" style="display:inline-block;background:#2563eb;color:white;padding:10px 18px;border-radius:6px;text-decoration:none">Open KYC queue</a></p>
+    <p>If the exporter hasn't completed their business profile yet, the KYC review screen will show them as pending. Their docs land as they fill them in.</p>"""
+    return subject, _wrap(body)
+
+
 def t_account_activated(name: str, login_link: str) -> tuple[str, str]:
     subject = "Your Jaratrade account is now active!"
     body = f"""<p>Hello {name or 'there'},</p>

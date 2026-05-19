@@ -19,6 +19,7 @@ from ..security import create_access_token, hash_password, secure_token, verify_
 from ..services.email import (
     send_template,
     t_account_under_review,
+    t_new_exporter_pending_review_admin,
     t_welcome_verify,
     verification_email,
 )
@@ -307,6 +308,44 @@ def register_exporter(
         user_id=user.id,
         dedupe_key=f"under_review:{user.id}",
     )
+
+    # Notify all admin accounts that a new exporter is awaiting KYC review.
+    # Used to slip through silently - admin had to check /admin/kyc on a
+    # schedule to spot pending applicants. One email per admin so each can
+    # see + respond independently; dedupe_key includes user.id so the same
+    # admin doesn't get pinged twice for the same applicant.
+    s = get_settings()
+    review_link = f"{s.site_url}/admin/kyc"
+    try:
+        biz_name = business_name or (user.business.business_name if user.business else None) or ""
+        biz_email = business_email or (user.business.business_email if user.business else None) or ""
+        contact_name = f"{user.firstname} {user.lastname}".strip() or user.email
+        admins = db.query(User).filter(User.role == ROLE_ADMIN, User.is_active.is_(True)).all()
+        for admin in admins:
+            if not admin.email:
+                continue
+            subj, html = t_new_exporter_pending_review_admin(
+                business_name=biz_name,
+                business_email=biz_email,
+                contact_name=contact_name,
+                contact_email=user.email,
+                review_link=review_link,
+            )
+            send_template(
+                db,
+                template="new_exporter_pending_review_admin",
+                to=admin.email,
+                subject=subj,
+                html=html,
+                user_id=admin.id,
+                dedupe_key=f"new_exporter_pending:{user.id}:{admin.id}",
+            )
+    except Exception:  # noqa: BLE001
+        # Admin alert is best-effort; never block the applicant's signup
+        # on a notification failure.
+        import traceback as _tb
+        _tb.print_exc()
+
     return success({"id": user.id}, message="Application submitted - we'll review and email you when activated.")
 
 
