@@ -67,6 +67,11 @@ def _send_via_resend_http(*, to: str, subject: str, html: str, text: Optional[st
         headers={
             "Authorization": f"Bearer {settings.smtp_password}",
             "Content-Type": "application/json",
+            # Cloudflare (in front of api.resend.com) blocks the default
+            # urllib UA (Python-urllib/x.y) as automated tooling, returning
+            # 403 with error code 1010. A descriptive UA bypasses the check.
+            "User-Agent": "jaratrade-api/1.0 (+https://api.jaratrade.com)",
+            "Accept": "application/json",
         },
         method="POST",
     )
