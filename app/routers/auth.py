@@ -76,6 +76,16 @@ def _do_login(db: Session, email: str, password: str, expected_role: str):
         raise fail(f"This account is not registered as {expected_role}", code=403)
     if not user.is_active:
         raise fail("Account is suspended - contact support", code=403)
+    # Gate on email verification. Admin/seeded accounts are pre-verified so
+    # this only blocks freshly registered users who haven't clicked the link
+    # yet. Re-send a fresh code on the same channel so the user can recover
+    # without having to re-register or contact support.
+    if not user.email_verified:
+        _send_verification_email(db, user)
+        return success(
+            {"requires_verification": True, "email": user.email, "role": user.role},
+            message="Please verify your email before logging in - we just sent you a fresh link.",
+        )
     # 2FA challenge: don't issue a token yet; frontend will call /auth/2fa/login
     if user.totp_enabled:
         return success(
@@ -107,8 +117,21 @@ def login_admin(request: Request, payload: LoginIn, db: Session = Depends(get_db
 # ───────────────────────── Register (per role) ─────────────────────────
 
 def _check_unique_email(db: Session, email: str) -> None:
-    if db.query(User).filter(User.email == email).first():
+    """Block duplicate signups, but recover gracefully when the existing
+    account is unverified: send a fresh verification email instead of
+    leaving the user stranded with a hard 409 and no path forward."""
+    existing = db.query(User).filter(User.email == email).first()
+    if not existing:
+        return
+    if existing.email_verified:
         raise fail("An account with this email already exists", code=409)
+    # Existing-but-unverified: re-send the link so the user can recover.
+    _send_verification_email(db, existing)
+    raise fail(
+        "You already started signing up with this email but haven't verified "
+        "it yet. We just sent you a fresh verification link - check your inbox.",
+        code=409,
+    )
 
 
 def _send_verification_email(db: Session, user: User) -> str:

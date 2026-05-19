@@ -59,6 +59,65 @@ def test_register_importer_slim_signup_no_address_or_dob(client):
     assert r.json()["status"] is True
 
 
+def test_login_blocks_unverified_user_and_resends_link(client):
+    """A user that signed up but never verified should be told to verify,
+    not handed a session token."""
+    email = "unverified-login@example.com"
+    r = client.put("/imp/register", data={
+        "type": "individual", "firstname": "Verif", "lastname": "Pending",
+        "phone": "+447400022001", "email": email, "password": "password123",
+        "profile_name": "verif-pending",
+    })
+    assert r.status_code == 200, r.text
+
+    r = client.post("/imp/login", json={"email": email, "password": "password123"})
+    assert r.status_code == 200
+    payload = r.json()["payload"]
+    # No token issued
+    assert "token" not in payload
+    # Flag for the frontend
+    assert payload.get("requires_verification") is True
+    assert payload.get("email") == email
+    assert payload.get("role") == "importer"
+
+
+def test_resignup_with_unverified_email_resends_verification(client):
+    """Hitting register a second time with an email tied to an unverified
+    account should resend the link, not block the user with a hard 409 and
+    no recovery path."""
+    email = "resignup@example.com"
+    r = client.put("/imp/register", data={
+        "type": "individual", "firstname": "Re", "lastname": "Signup",
+        "phone": "+447400022002", "email": email, "password": "password123",
+        "profile_name": "re-signup",
+    })
+    assert r.status_code == 200
+
+    r2 = client.put("/imp/register", data={
+        "type": "individual", "firstname": "Re", "lastname": "Signup",
+        "phone": "+447400022003", "email": email, "password": "password123",
+        "profile_name": "re-signup-2",
+    })
+    # Still rejects as a duplicate (the existing user wasn't replaced) but
+    # the message tells the user a fresh link was sent.
+    assert r2.status_code == 409
+    assert "verification" in r2.text.lower()
+
+
+def test_login_works_normally_for_verified_user(client):
+    """Sanity: the seeded importer is pre-verified and should log in
+    cleanly with a token, no requires_verification flag."""
+    from app.seed import SEED_IMPORTER_PASSWORD
+    r = client.post(
+        "/imp/login",
+        json={"email": "importer@jaratrade.com", "password": SEED_IMPORTER_PASSWORD},
+    )
+    assert r.status_code == 200
+    payload = r.json()["payload"]
+    assert payload.get("token")
+    assert "requires_verification" not in payload
+
+
 def test_register_exporter_slim_signup_no_business_or_address(client):
     """Same as above but for exporters - business details + KYC docs all
     move to the post-signup profile flow. The User row should be created,
