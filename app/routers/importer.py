@@ -633,16 +633,30 @@ async def init_payment(
                     code=402,
                 )
 
-    tx_ref = "JARA" + secrets.token_urlsafe(8).replace("-", "")[:12]
-    payment = Payment(
-        order_id=order.id,
-        tx_ref=tx_ref,
-        amount=order.total,
-        currency=order.currency,
-        status="pending",
+    # Idempotent: if the buyer already has a pending Payment row for this
+    # order (e.g. they refreshed the pay page, navigated away and back, or
+    # React Query refetched on focus), reuse its tx_ref instead of spawning
+    # a new one each time. Otherwise we end up with orphan payment rows
+    # which clutter the dashboard + can confuse the FLW webhook ordering.
+    existing_pending = (
+        db.query(Payment)
+        .filter(Payment.order_id == order.id, Payment.status == "pending")
+        .order_by(Payment.time_created.desc())
+        .first()
     )
-    db.add(payment)
-    db.commit()
+    if existing_pending:
+        tx_ref = existing_pending.tx_ref
+    else:
+        tx_ref = "JARA" + secrets.token_urlsafe(8).replace("-", "")[:12]
+        payment = Payment(
+            order_id=order.id,
+            tx_ref=tx_ref,
+            amount=order.total,
+            currency=order.currency,
+            status="pending",
+        )
+        db.add(payment)
+        db.commit()
 
     # Pull the admin-configured commission rate + commission subaccount so the
     # split honours whatever's currently set in /admin/settings.
