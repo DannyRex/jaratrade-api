@@ -83,6 +83,11 @@ def get_profile(
         } for r in rs], "total_length": len(rs), "page": 1, "len": len(rs)})
 
     biz = user.business
+    # Saved shipping address count - the profile-progress UI uses this to
+    # tick the "Shipping address" checklist item. Reading user.address here
+    # would be wrong (that's the user's home/personal address, not the
+    # shipping addresses stored in the ShippingAddress table).
+    shipping_count = db.query(ShippingAddress).filter(ShippingAddress.user_id == user.id).count()
     return success({
         "id": user.id,
         "firstname": user.firstname,
@@ -99,6 +104,8 @@ def get_profile(
         "product_delivered": user.product_delivered,
         "review_count": user.review_count,
         "status": user.status,
+        "has_shipping_address": shipping_count > 0,
+        "shipping_addresses_count": shipping_count,
         "business": _biz_dict(biz),
     })
 
