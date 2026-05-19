@@ -59,6 +59,76 @@ def test_kyc_approve_reject_flow(client, admin_token):
     assert r.json()["payload"]["token"]
 
 
+def test_resend_approval_email_bypasses_dedupe(client, admin_token):
+    """If the original activation email failed silently (SMTP outage), admin
+    can re-fire it via /adm/users/{id}/resend-approval-email without being
+    blocked by the dedupe key the first attempt wrote.
+    """
+    from app.database import SessionLocal
+    from app.models import NotificationLog, User
+
+    # Register + approve a fresh exporter
+    r = client.put("/exp/register", data={
+        "firstname": "Resend", "lastname": "Target", "phone": "+2348100009990",
+        "email": "resend-target@example.com", "password": "password123",
+        "profile_name": "resend-target",
+    })
+    assert r.status_code == 200, r.text
+    with SessionLocal() as db:
+        u = db.query(User).filter(User.email == "resend-target@example.com").first()
+        user_id = u.id
+
+    r = client.post(f"/adm/kyc/{user_id}/approve", headers={"Authorization": f"Bearer {admin_token}"})
+    assert r.status_code == 200, r.text
+
+    # The original approval already wrote an `activated:{id}` log row.
+    with SessionLocal() as db:
+        first_row = (
+            db.query(NotificationLog)
+            .filter(NotificationLog.dedupe_key == f"activated:{user_id}")
+            .first()
+        )
+        assert first_row is not None
+
+    # Admin force-resend - bypasses dedupe by passing no dedupe key
+    r = client.post(
+        f"/adm/users/{user_id}/resend-approval-email",
+        headers={"Authorization": f"Bearer {admin_token}"},
+    )
+    assert r.status_code == 200, r.text
+    assert r.json()["payload"]["sent"] is True
+
+    # A fresh log row landed under the resend template; original dedupe row
+    # is unchanged (we didn't pretend the failed one succeeded).
+    with SessionLocal() as db:
+        resend_row = (
+            db.query(NotificationLog)
+            .filter(NotificationLog.template == "account_activated_resend",
+                    NotificationLog.user_id == user_id)
+            .first()
+        )
+        assert resend_row is not None
+
+
+def test_resend_approval_email_rejects_non_approved(client, admin_token):
+    """Can't resend before KYC actually approved."""
+    from app.database import SessionLocal
+    from app.models import User
+    r = client.put("/exp/register", data={
+        "firstname": "Pending", "lastname": "Resend", "phone": "+2348100009991",
+        "email": "pending-resend@example.com", "password": "password123",
+        "profile_name": "pending-resend",
+    })
+    assert r.status_code == 200
+    with SessionLocal() as db:
+        user_id = db.query(User).filter(User.email == "pending-resend@example.com").first().id
+    r = client.post(
+        f"/adm/users/{user_id}/resend-approval-email",
+        headers={"Authorization": f"Bearer {admin_token}"},
+    )
+    assert r.status_code == 400
+
+
 def test_admin_can_create_market(client, admin_token):
     r = client.put("/adm/market", headers={"Authorization": f"Bearer {admin_token}"},
                    data={"name": "Test Market", "location": "Test City", "city": "Test"})

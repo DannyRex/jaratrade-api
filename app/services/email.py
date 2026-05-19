@@ -87,21 +87,45 @@ def _send_via_resend_http(*, to: str, subject: str, html: str, text: Optional[st
         raise RuntimeError(f"Resend HTTP {e.code}: {body[:300]}") from e
 
 
-def _send_quiet(**kwargs) -> None:
+def _send_quiet(
+    *,
+    to: str,
+    subject: str,
+    html: str,
+    text: Optional[str],
+    log_id: Optional[str] = None,
+) -> None:
     """Thread target: dispatch via the right transport for the configured
-    provider, swallow exceptions to avoid noisy worker tracebacks for
-    transient blips. The NotificationLog row was written optimistically as
-    success=True before this thread spawned, so a real failure shows up in
-    the Resend dashboard but not in our DB."""
+    provider. If `log_id` is set, write the real success/failure back to
+    the NotificationLog row when the thread is done - this is what lets
+    the dedupe logic in `send_template` distinguish "previously succeeded"
+    from "previously failed and worth retrying"."""
+    err_text: Optional[str] = None
     try:
         # Resend's SMTP submission gateway is blocked on most PaaS hosts -
         # prefer the HTTPS REST API when configured for Resend.
         if "resend" in (settings.smtp_host or "").lower():
-            _send_via_resend_http(**kwargs)
+            _send_via_resend_http(to=to, subject=subject, html=html, text=text)
         else:
-            _send_via_smtp(**kwargs)
+            _send_via_smtp(to=to, subject=subject, html=html, text=text)
     except Exception:  # noqa: BLE001
+        err_text = traceback.format_exc()
         traceback.print_exc()
+
+    # Best-effort writeback. Daemon thread can't reuse the request session
+    # (it's already closed), so open a fresh one.
+    if log_id is not None:
+        try:
+            from ..database import SessionLocal  # local import to avoid cycles
+            with SessionLocal() as wdb:
+                row = wdb.get(NotificationLog, log_id)
+                if row is not None:
+                    row.success = err_text is None
+                    if err_text:
+                        row.error = err_text[:2000]
+                    wdb.commit()
+        except Exception:  # noqa: BLE001
+            traceback.print_exc()
 
 
 def send_email(*, to: str, subject: str, html: str, text: Optional[str] = None) -> None:
@@ -135,15 +159,29 @@ def send_template(
     user_id: Optional[str] = None,
     dedupe_key: Optional[str] = None,
 ) -> bool:
-    """Send + log. Returns True on send, False if deduped/failed.
+    """Send + log. Returns True on send, False if deduped (prior success).
 
     Pass a stable `dedupe_key` (e.g. `invoice:user_id:2026-05`) to make sends
     idempotent across retries.
+
+    Dedupe semantics: we skip if a prior send with the same key was a
+    confirmed success. If a prior send failed (e.g. SMTP outage), the failed
+    log row is deleted so the retry can write a fresh row - otherwise the
+    column's unique constraint would forever block the retry.
     """
     if dedupe_key:
-        existing = db.query(NotificationLog).filter(NotificationLog.dedupe_key == dedupe_key).first()
-        if existing:
-            return False
+        existing = (
+            db.query(NotificationLog)
+            .filter(NotificationLog.dedupe_key == dedupe_key)
+            .first()
+        )
+        if existing is not None:
+            if existing.success:
+                return False
+            # Previous attempt failed - clear it so the new attempt isn't
+            # blocked by the unique constraint on dedupe_key.
+            db.delete(existing)
+            db.flush()
 
     log = NotificationLog(
         user_id=user_id,
@@ -152,14 +190,8 @@ def send_template(
         to_address=to,
         subject=subject,
         dedupe_key=dedupe_key,
-        success=True,
+        success=True,  # optimistic; daemon thread writes the real outcome
     )
-    try:
-        send_email(to=to, subject=subject, html=html, text=text)
-    except Exception:  # noqa: BLE001
-        log.success = False
-        log.error = traceback.format_exc()[:2000]
-
     db.add(log)
     try:
         db.commit()
@@ -167,7 +199,26 @@ def send_template(
         # Another concurrent send beat us to the dedupe key.
         db.rollback()
         return False
-    return log.success
+    db.refresh(log)
+
+    # Dispatch via the background thread, telling it which row to update
+    # with the real success/failure when the send completes.
+    if not settings.smtp_host or not settings.smtp_user:
+        print(f"\n[EMAIL DEV] to={to}  subject={subject}\n{(text or html)[:600]}\n")
+        return True
+    threading.Thread(
+        target=_send_quiet,
+        kwargs={
+            "to": to,
+            "subject": subject,
+            "html": html,
+            "text": text,
+            "log_id": log.id,
+        },
+        daemon=True,
+        name=f"mail-{subject[:30]}",
+    ).start()
+    return True
 
 
 # ───────────────────────── Template helpers ─────────────────────────

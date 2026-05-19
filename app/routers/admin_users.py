@@ -251,6 +251,42 @@ async def reprovision_subaccount(
     return success(_serialize_user(u))
 
 
+@router.post("/users/{user_id}/resend-approval-email")
+def resend_approval_email(
+    user_id: str,
+    _: User = Depends(require_admin),
+    db: Session = Depends(get_db),
+):
+    """Manually re-send the "account approved" email.
+
+    Useful when the original send failed silently (SMTP outage, blocked port,
+    domain not verified, etc) and the user is stuck without their welcome
+    email. Bypasses `send_template`'s dedupe by passing dedupe_key=None.
+    """
+    u = db.get(User, user_id)
+    if not u:
+        raise fail("User not found", code=404)
+    if u.role != ROLE_EXPORTER:
+        raise fail("Approval emails only apply to exporter accounts", code=400)
+    if u.kyc_status != "approved":
+        raise fail("This exporter isn't approved yet", code=400)
+
+    subject, html = t_account_activated(
+        u.firstname or "there",
+        f"{settings.site_url}/auth/login/exporter",
+    )
+    send_template(
+        db,
+        template="account_activated_resend",
+        to=u.email,
+        subject=subject,
+        html=html,
+        user_id=u.id,
+        # Deliberately no dedupe_key - admin asked for a re-send.
+    )
+    return success({"sent": True}, message=f"Approval email re-sent to {u.email}")
+
+
 @router.post("/kyc/{user_id}/reject")
 def kyc_reject(
     user_id: str,
