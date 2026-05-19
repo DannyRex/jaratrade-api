@@ -3,14 +3,21 @@
 Architecture:
 - `send_template(...)` is the single entrypoint. It renders, sends, and writes
   a `NotificationLog` row for audit + idempotency (via `dedupe_key`).
-- SMTP backend with stdout fallback for dev (no creds = print to console).
+- Resend HTTPS API when SMTP_HOST points at Resend, otherwise SMTP submission.
+  Most PaaS hosts (Railway included) block outbound SMTP ports (25/465/587)
+  to deter spam, so going over HTTPS port 443 to api.resend.com is the only
+  reliable channel from a hobby-tier container.
+- stdout fallback for dev (no creds = print to console).
 - Templates are pure Python f-strings - swap to Jinja2 if templates grow.
 """
 from __future__ import annotations
 
+import json
 import smtplib
 import threading
 import traceback
+import urllib.error
+import urllib.request
 from email.message import EmailMessage
 from typing import Optional
 
@@ -39,15 +46,56 @@ def _send_via_smtp(*, to: str, subject: str, html: str, text: Optional[str]) -> 
         smtp.send_message(msg)
 
 
-def _send_via_smtp_quiet(**kwargs) -> None:
-    """Thread target: swallow exceptions (we already logged intent before
-    spawning) to avoid noisy worker tracebacks for transient SMTP blips."""
+def _send_via_resend_http(*, to: str, subject: str, html: str, text: Optional[str]) -> None:
+    """Send through Resend's HTTPS REST API.
+
+    Reuses the SMTP_PASSWORD env var as the Resend API key (it's the same
+    secret either way) and SMTP_FROM as the sender. Port 443 is open on
+    every PaaS plan so this works where SMTP submission is blocked.
+    """
+    payload: dict = {
+        "from": settings.smtp_from,
+        "to": [to],
+        "subject": subject,
+        "html": html,
+    }
+    if text:
+        payload["text"] = text
+    req = urllib.request.Request(
+        "https://api.resend.com/emails",
+        data=json.dumps(payload).encode("utf-8"),
+        headers={
+            "Authorization": f"Bearer {settings.smtp_password}",
+            "Content-Type": "application/json",
+        },
+        method="POST",
+    )
     try:
-        _send_via_smtp(**kwargs)
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            resp.read()
+    except urllib.error.HTTPError as e:
+        body = ""
+        try:
+            body = e.read().decode("utf-8", errors="replace")
+        except Exception:  # noqa: BLE001
+            pass
+        raise RuntimeError(f"Resend HTTP {e.code}: {body[:300]}") from e
+
+
+def _send_quiet(**kwargs) -> None:
+    """Thread target: dispatch via the right transport for the configured
+    provider, swallow exceptions to avoid noisy worker tracebacks for
+    transient blips. The NotificationLog row was written optimistically as
+    success=True before this thread spawned, so a real failure shows up in
+    the Resend dashboard but not in our DB."""
+    try:
+        # Resend's SMTP submission gateway is blocked on most PaaS hosts -
+        # prefer the HTTPS REST API when configured for Resend.
+        if "resend" in (settings.smtp_host or "").lower():
+            _send_via_resend_http(**kwargs)
+        else:
+            _send_via_smtp(**kwargs)
     except Exception:  # noqa: BLE001
-        # The NotificationLog row was written optimistically as success=True.
-        # Real delivery failures surface in the Resend dashboard; we don't
-        # double-write the log here because the request DB session is gone.
         traceback.print_exc()
 
 
@@ -62,10 +110,10 @@ def send_email(*, to: str, subject: str, html: str, text: Optional[str] = None) 
         print(f"\n[EMAIL DEV] to={to}  subject={subject}\n{(text or html)[:600]}\n")
         return
     threading.Thread(
-        target=_send_via_smtp_quiet,
+        target=_send_quiet,
         kwargs={"to": to, "subject": subject, "html": html, "text": text},
         daemon=True,
-        name=f"smtp-{subject[:30]}",
+        name=f"mail-{subject[:30]}",
     ).start()
 
 
