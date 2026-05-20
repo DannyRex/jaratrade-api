@@ -72,6 +72,8 @@ def get_profile(
         "valid_identification": biz.valid_identification if biz else None,
         "bank_id": biz.bank_id if biz else None,
         "account_number": biz.account_number if biz else None,
+        # Uploaded KYC documents - {doc_type: url}.
+        "documents": biz.documents_dict if biz else {},
         # KYC lifecycle - drives the "Submit for review" UI.
         "kyc_status": user.kyc_status,
         "kyc_submitted_at": user.kyc_submitted_at.isoformat() if user.kyc_submitted_at else None,
@@ -180,6 +182,71 @@ def change_password(
 
 # ───────────────────────── KYC submission ─────────────────────────
 
+# Document slots the exporter can upload as KYC proof.
+_KYC_DOC_TYPES = {"id", "cac"}
+# Reject obviously-wrong uploads early. Images + PDF cover scans/photos.
+_KYC_DOC_EXTENSIONS = {"jpg", "jpeg", "png", "webp", "gif", "pdf", "heic"}
+
+
+@router.post("/kyc-document")
+async def upload_kyc_document(
+    user: User = Depends(require_exporter),
+    db: Session = Depends(get_db),
+    doc_type: str = Form(...),
+    file: UploadFile = File(...),
+):
+    """Upload a KYC proof document.
+
+    doc_type:
+      - "id"  : means-of-ID scan (passport / NIN slip / driver's licence)
+      - "cac" : business registration (CAC) certificate
+
+    The file goes to Cloudinary; its URL is merged into
+    BusinessProfile.documents, a JSON dict {doc_type: url}. The means-of-ID
+    document is what the /exp/submit-for-review completeness check requires
+    - a free-text "I have a passport" proves nothing to a KYC reviewer.
+    """
+    doc_type = (doc_type or "").strip().lower()
+    if doc_type not in _KYC_DOC_TYPES:
+        raise fail(f"doc_type must be one of: {', '.join(sorted(_KYC_DOC_TYPES))}", code=400)
+
+    filename = file.filename or f"{doc_type}.pdf"
+    ext = filename.rsplit(".", 1)[-1].lower() if "." in filename else ""
+    if ext not in _KYC_DOC_EXTENSIONS:
+        raise fail(
+            "Unsupported file type. Upload an image (jpg/png/webp/heic) or a PDF.",
+            code=400,
+        )
+
+    content = await file.read()
+    if not content:
+        raise fail("The uploaded file is empty.", code=400)
+    # Cloudinary free tier caps at 10MB for raw/image; keep a sane bound.
+    if len(content) > 10 * 1024 * 1024:
+        raise fail("File too large - keep KYC documents under 10MB.", code=400)
+
+    url = await upload_file(content, filename, folder="kyc")
+    if not url:
+        raise fail("Upload failed - please try again.", code=502)
+
+    biz = user.business
+    if not biz:
+        # Lazy-create. business_name is NOT NULL but an empty string
+        # satisfies that; the completeness check treats "" as missing so
+        # this doesn't falsely mark the profile ready.
+        biz = BusinessProfile(user_id=user.id, business_name="")
+        db.add(biz)
+        db.flush()
+
+    docs = biz.documents_dict
+    docs[doc_type] = url
+    biz.documents = json.dumps(docs)
+    db.commit()
+    return success({"doc_type": doc_type, "url": url, "documents": docs})
+
+
+# ───────────────────────── KYC submission ─────────────────────────
+
 # Fields an exporter must have on file before they can submit for review.
 # Each tuple is (human label, getter). bank_id + account_number are
 # required because the KYC-approval step provisions the Flutterwave
@@ -196,7 +263,7 @@ def _kyc_missing_fields(user: User) -> List[str]:
         # No business profile at all - everything below is missing.
         return missing + [
             "Business name", "Business registration (CAC) number",
-            "Business address", "Tax ID (TIN)", "Means of ID",
+            "Business address", "Tax ID (TIN)", "Means of ID document",
             "Bank account",
         ]
     if not biz.business_name:
@@ -207,8 +274,10 @@ def _kyc_missing_fields(user: User) -> List[str]:
         missing.append("Business address")
     if not biz.tin:
         missing.append("Tax ID (TIN)")
-    if not biz.valid_identification:
-        missing.append("Means of ID")
+    # Means of ID is now an uploaded document, not free text. The proof is
+    # the file in documents["id"], not the valid_identification string.
+    if not biz.documents_dict.get("id"):
+        missing.append("Means of ID document")
     if not (biz.bank_id and biz.account_number):
         missing.append("Bank account (bank + account number)")
     return missing

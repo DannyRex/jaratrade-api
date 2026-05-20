@@ -106,6 +106,20 @@ class BusinessProfile(Base, TimestampMixin):
 
     user: Mapped["User"] = relationship("User", back_populates="business")
 
+    @property
+    def documents_dict(self) -> dict:
+        """`documents` stores a JSON dict of {doc_type: url} for uploaded
+        KYC files (id, cac, ...). Return it parsed, tolerating null /
+        legacy / malformed values."""
+        import json as _json
+        if not self.documents:
+            return {}
+        try:
+            parsed = _json.loads(self.documents)
+            return parsed if isinstance(parsed, dict) else {}
+        except (ValueError, TypeError):
+            return {}
+
 
 class EmailVerificationToken(Base, TimestampMixin):
     __tablename__ = "email_verification_tokens"

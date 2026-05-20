@@ -49,9 +49,23 @@ def _serialize_user(u: User) -> dict:
         "monthly_spent": f"{float(u.monthly_spent or 0):.2f}",
         "review_count": u.review_count,
         "product_delivered": u.product_delivered,
+        # Full business profile - the KYC reviewer needs every field the
+        # exporter submitted, not just name/country/reg.
         "business_name": biz.business_name if biz else None,
+        "business_email": biz.business_email if biz else None,
+        "business_address": biz.business_address if biz else None,
         "business_country": biz.business_country if biz else None,
         "business_reg_number": biz.business_reg_number if biz else None,
+        "business_type": biz.business_type if biz else None,
+        "annual_turnover": biz.annual_turnover if biz else None,
+        "duration_in_business": biz.duration_in_business if biz else None,
+        "tin": biz.tin if biz else None,
+        "valid_identification": biz.valid_identification if biz else None,
+        "bank_id": biz.bank_id if biz else None,
+        "account_name": biz.account_name if biz else None,
+        "account_number": biz.account_number if biz else None,
+        # Uploaded KYC documents - JSON dict of {doc_type: url}.
+        "documents": biz.documents_dict if biz else {},
         # FLW subaccount provisioning state - admins use this to spot
         # exporters who passed KYC but couldn't be provisioned (bad bank
         # details, etc) so they can be retried manually.

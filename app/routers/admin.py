@@ -399,12 +399,29 @@ def orders_stats(
     )
     gmv = float(gmv_row[0] or 0.0) if gmv_row else 0.0
 
-    pending_payouts = (
-        db.query(func.count(Order.id))
-        .filter(Order.status == "delivered")
-        .filter(~Order.id.in_(db.query(Payout.order_id)))
-        .scalar()
-    ) or 0
+    # "Pending payouts" must mean the same thing the /admin/payouts
+    # "Eligible" tab shows, otherwise the orders-dashboard card and the
+    # payouts screen disagree (card said 1, screen showed none, because a
+    # delivered order still inside its 7-day dispute window counted on the
+    # card but isn't eligible yet). Reuse the exact eligibility rule:
+    # delivered + (past dispute window OR buyer-confirmed) + has a
+    # successful payment + no payout dispatched.
+    from ..routers.payouts import _is_payout_eligible
+
+    orders_with_payout = {row[0] for row in db.query(Payout.order_id).all()}
+    pending_payouts = 0
+    for o in db.query(Order).filter(Order.status == "delivered").all():
+        if o.id in orders_with_payout:
+            continue
+        if not _is_payout_eligible(o):
+            continue
+        has_payment = (
+            db.query(Payment)
+            .filter(Payment.order_id == o.id, Payment.status == "successful")
+            .first()
+        )
+        if has_payment:
+            pending_payouts += 1
 
     open_disputes = (
         db.query(func.count(Dispute.id))

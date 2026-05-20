@@ -45,11 +45,18 @@ def _complete_profile(client, token: str) -> None:
             "business_reg_num": "RC998877",
             "business_type": "food_beverage",
             "tin": "TIN-998877",
-            "valid_ID": "passport",
             "bank_id": bank_id,
             "account_name": "Kyc Test Foods Ltd",
             "account_number": "0123456789",
         },
+    )
+    assert r.status_code == 200, r.text
+    # The means-of-ID document is a required upload, not a text field.
+    r = client.post(
+        "/exp/kyc-document",
+        headers={"Authorization": f"Bearer {token}"},
+        data={"doc_type": "id"},
+        files={"file": ("id.png", b"fake-id-scan-bytes", "image/png")},
     )
     assert r.status_code == 200, r.text
 
@@ -180,3 +187,74 @@ def test_kyc_approve_works_after_submission(client, admin_token):
     )
     assert r.status_code == 200, r.text
     assert r.json()["payload"]["kyc_status"] == "approved"
+
+
+# ───────────────────────── KYC document upload ─────────────────────────
+
+def test_kyc_document_upload_stores_url(client):
+    token = _register_exporter(client, "docupload-exp@example.com")
+    r = client.post(
+        "/exp/kyc-document",
+        headers={"Authorization": f"Bearer {token}"},
+        data={"doc_type": "id"},
+        files={"file": ("passport.png", b"fake-scan", "image/png")},
+    )
+    assert r.status_code == 200, r.text
+    payload = r.json()["payload"]
+    assert payload["doc_type"] == "id"
+    assert payload["url"]
+    assert payload["documents"].get("id") == payload["url"]
+
+    # It shows up on the profile + clears the missing-field entry.
+    r = client.get("/exp/profile", headers={"Authorization": f"Bearer {token}"})
+    p = r.json()["payload"]
+    assert p["documents"].get("id")
+    assert "Means of ID document" not in p["kyc_missing_fields"]
+
+
+def test_kyc_document_rejects_bad_doc_type(client):
+    token = _register_exporter(client, "baddoctype-exp@example.com")
+    r = client.post(
+        "/exp/kyc-document",
+        headers={"Authorization": f"Bearer {token}"},
+        data={"doc_type": "selfie"},
+        files={"file": ("x.png", b"bytes", "image/png")},
+    )
+    assert r.status_code == 400
+    assert "doc_type" in r.text.lower()
+
+
+def test_kyc_document_rejects_unsupported_extension(client):
+    token = _register_exporter(client, "badext-exp@example.com")
+    r = client.post(
+        "/exp/kyc-document",
+        headers={"Authorization": f"Bearer {token}"},
+        data={"doc_type": "id"},
+        files={"file": ("malware.exe", b"bytes", "application/octet-stream")},
+    )
+    assert r.status_code == 400
+    assert "file type" in r.text.lower()
+
+
+def test_submit_for_review_blocked_without_id_document(client):
+    """A profile with every text field filled but no ID document uploaded
+    must still fail the completeness check."""
+    from app.database import SessionLocal
+    from app.models import Bank
+
+    token = _register_exporter(client, "noiddoc-exp@example.com")
+    with SessionLocal() as db:
+        bank_id = db.query(Bank).filter(Bank.flutter_code.isnot(None)).first().id
+    client.post(
+        "/exp/profile",
+        headers={"Authorization": f"Bearer {token}"},
+        data={
+            "business_name": "No ID Doc Ltd", "business_email": "b@noid.com",
+            "business_address": "1 St", "business_reg_num": "RC1", "tin": "TIN1",
+            "bank_id": bank_id, "account_name": "No ID Doc Ltd",
+            "account_number": "0123456789",
+        },
+    )
+    r = client.post("/exp/submit-for-review", headers={"Authorization": f"Bearer {token}"})
+    assert r.status_code == 400
+    assert "means of id document" in r.text.lower()
