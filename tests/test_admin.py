@@ -38,6 +38,18 @@ def test_kyc_approve_reject_flow(client, admin_token):
     })
     assert r.status_code == 200, r.text
 
+    # 1b. Simulate the exporter pressing "Submit for review" - the admin KYC
+    # queue + approve both now require kyc_submitted_at to be set. (The
+    # submission flow itself is covered by tests/test_kyc_submission.py.)
+    from datetime import datetime, timezone
+
+    from app.database import SessionLocal
+    from app.models import User
+    with SessionLocal() as db:
+        u = db.query(User).filter(User.email == "newtest@example.com").first()
+        u.kyc_submitted_at = datetime.now(timezone.utc).replace(tzinfo=None)
+        db.commit()
+
     # 2. Queue should now have one entry
     r = client.get("/adm/kyc/queue", headers={"Authorization": f"Bearer {admin_token}"})
     assert r.status_code == 200
@@ -74,8 +86,13 @@ def test_resend_approval_email_bypasses_dedupe(client, admin_token):
         "profile_name": "resend-target",
     })
     assert r.status_code == 200, r.text
+    # Stamp kyc_submitted_at - approve now requires the exporter to have
+    # submitted for review first.
+    from datetime import datetime, timezone
     with SessionLocal() as db:
         u = db.query(User).filter(User.email == "resend-target@example.com").first()
+        u.kyc_submitted_at = datetime.now(timezone.utc).replace(tzinfo=None)
+        db.commit()
         user_id = u.id
 
     r = client.post(f"/adm/kyc/{user_id}/approve", headers={"Authorization": f"Bearer {admin_token}"})

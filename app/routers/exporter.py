@@ -9,6 +9,8 @@ from fastapi import APIRouter, Depends, File, Form, Query, UploadFile
 from sqlalchemy import desc
 from sqlalchemy.orm import Session
 
+from ..config import get_settings
+from ..constants import ROLE_ADMIN
 from ..database import get_db
 from ..deps import require_exporter
 from ..envelope import fail, success
@@ -17,7 +19,12 @@ from ..models.user import BusinessProfile
 from ..routers.public import _serialize_product_summary
 from ..security import hash_password, verify_password
 from ..services.cloudinary import upload_file
-from ..services.email import send_template, t_order_status_update
+from ..services.email import (
+    send_template,
+    t_account_under_review,
+    t_new_exporter_pending_review_admin,
+    t_order_status_update,
+)
 
 router = APIRouter(prefix="/exp", tags=["exporter"])
 
@@ -62,6 +69,15 @@ def get_profile(
         "annual_turnover": biz.annual_turnover if biz else None,
         "duration_in_business": biz.duration_in_business if biz else None,
         "tin": biz.tin if biz else None,
+        "valid_identification": biz.valid_identification if biz else None,
+        "bank_id": biz.bank_id if biz else None,
+        "account_number": biz.account_number if biz else None,
+        # KYC lifecycle - drives the "Submit for review" UI.
+        "kyc_status": user.kyc_status,
+        "kyc_submitted_at": user.kyc_submitted_at.isoformat() if user.kyc_submitted_at else None,
+        "kyc_rejection_reason": user.kyc_rejection_reason,
+        # Empty list = profile complete + ready to submit.
+        "kyc_missing_fields": _kyc_missing_fields(user),
         "total_orders": total_orders,
         "pending_orders": pending_orders,
         "total_revenue": f"{total_revenue:.2f}",
@@ -90,21 +106,51 @@ def update_profile(
     business_email: Optional[str] = Form(default=None),
     business_address: Optional[str] = Form(default=None),
     description: Optional[str] = Form(default=None),
+    # KYC detail fields - collected post-signup on the slim-signup flow.
+    # These are exactly what the /exp/submit-for-review completeness check
+    # requires, so the exporter must be able to set them here.
+    business_reg_num: Optional[str] = Form(default=None),
+    business_type: Optional[str] = Form(default=None),
+    business_country: Optional[str] = Form(default=None),
+    annual_turnover: Optional[str] = Form(default=None),
+    duration_in_business: Optional[str] = Form(default=None),
+    tin: Optional[str] = Form(default=None),
+    valid_ID: Optional[str] = Form(default=None),
+    bank_id: Optional[str] = Form(default=None),
+    account_name: Optional[str] = Form(default=None),
+    account_number: Optional[str] = Form(default=None),
 ):
     for k, v in {"firstname": firstname, "lastname": lastname, "phone": phone, "address": address,
                  "country": country, "profile_name": profile_name}.items():
         if v is not None:
             setattr(user, k, v)
 
-    # Lazy-create the BusinessProfile: slim-signup exporters won't have
-    # one yet, but the moment they fill in business details from their
-    # profile screen we create the row. business_name is the only
-    # NOT NULL field on the table, so it's the gate.
+    try:
+        duration_int = int(duration_in_business) if duration_in_business else None
+    except (TypeError, ValueError):
+        duration_int = None
+
+    # Full set of BusinessProfile columns the exporter can edit. Map of
+    # column name -> submitted value; only non-None values are applied.
     biz_updates = {
         "business_name": business_name,
         "business_email": business_email,
         "business_address": business_address,
+        "business_reg_number": business_reg_num,
+        "business_type": business_type,
+        "business_country": business_country,
+        "annual_turnover": annual_turnover,
+        "duration_in_business": duration_int,
+        "tin": tin,
+        "valid_identification": valid_ID,
+        "bank_id": bank_id,
+        "account_name": account_name,
+        "account_number": account_number,
     }
+    # Lazy-create the BusinessProfile: slim-signup exporters won't have
+    # one yet, but the moment they fill in business details from their
+    # profile screen we create the row. business_name is the only
+    # NOT NULL field on the table, so it's the gate.
     if user.business:
         for k, v in biz_updates.items():
             if v is not None:
@@ -112,9 +158,7 @@ def update_profile(
     elif business_name:
         db.add(BusinessProfile(
             user_id=user.id,
-            business_name=business_name,
-            business_email=business_email,
-            business_address=business_address,
+            **{k: v for k, v in biz_updates.items() if v is not None},
         ))
     db.commit()
     return success({"updated": True})
@@ -132,6 +176,128 @@ def change_password(
     user.password_hash = hash_password(new_password)
     db.commit()
     return success({"changed": True})
+
+
+# ───────────────────────── KYC submission ─────────────────────────
+
+# Fields an exporter must have on file before they can submit for review.
+# Each tuple is (human label, getter). bank_id + account_number are
+# required because the KYC-approval step provisions the Flutterwave
+# subaccount, which can't be created without the seller's bank details.
+def _kyc_missing_fields(user: User) -> List[str]:
+    """Return a list of human-readable missing items, empty if complete."""
+    missing: List[str] = []
+    if not (user.firstname and user.lastname):
+        missing.append("Your name")
+    if not user.phone:
+        missing.append("Phone number")
+    biz = user.business
+    if not biz:
+        # No business profile at all - everything below is missing.
+        return missing + [
+            "Business name", "Business registration (CAC) number",
+            "Business address", "Tax ID (TIN)", "Means of ID",
+            "Bank account",
+        ]
+    if not biz.business_name:
+        missing.append("Business name")
+    if not biz.business_reg_number:
+        missing.append("Business registration (CAC) number")
+    if not biz.business_address:
+        missing.append("Business address")
+    if not biz.tin:
+        missing.append("Tax ID (TIN)")
+    if not biz.valid_identification:
+        missing.append("Means of ID")
+    if not (biz.bank_id and biz.account_number):
+        missing.append("Bank account (bank + account number)")
+    return missing
+
+
+@router.post("/submit-for-review")
+def submit_for_review(
+    user: User = Depends(require_exporter),
+    db: Session = Depends(get_db),
+):
+    """Exporter hands their completed business profile to admin for KYC review.
+
+    This is the gate between "signed up" and "in the admin review queue".
+    Until an exporter calls this, kyc_submitted_at is NULL and they don't
+    appear in /adm/kyc/queue - so an admin can't approve an empty profile.
+
+    Guards:
+      - already approved -> nothing to do
+      - profile incomplete -> 400 with the list of missing items
+    """
+    if user.kyc_status == "approved":
+        raise fail("Your account is already approved.", code=400)
+
+    missing = _kyc_missing_fields(user)
+    if missing:
+        raise fail(
+            "Complete your profile before submitting: " + "; ".join(missing),
+            code=400,
+        )
+
+    # Stamp the submission. If they were previously rejected and are
+    # re-submitting after fixing the issues, flip them back into the
+    # pending queue.
+    user.kyc_submitted_at = datetime.now(timezone.utc).replace(tzinfo=None)
+    if user.kyc_status == "rejected":
+        user.kyc_status = "pending"
+        user.kyc_rejection_reason = None
+    db.commit()
+
+    # Notify the applicant that their submission is in the queue.
+    try:
+        subject, html = t_account_under_review(user.firstname or "there")
+        send_template(
+            db,
+            template="account_under_review",
+            to=user.email,
+            subject=subject,
+            html=html,
+            user_id=user.id,
+            dedupe_key=f"under_review:{user.id}:{user.kyc_submitted_at.isoformat()}",
+        )
+    except Exception:  # noqa: BLE001
+        import traceback as _tb
+        _tb.print_exc()
+
+    # Notify every active admin that there's a new application to review.
+    try:
+        s = get_settings()
+        review_link = f"{s.site_url}/admin/kyc"
+        biz = user.business
+        for admin in db.query(User).filter(
+            User.role == ROLE_ADMIN, User.is_active.is_(True)
+        ).all():
+            if not admin.email:
+                continue
+            subj, ahtml = t_new_exporter_pending_review_admin(
+                business_name=biz.business_name if biz else "",
+                business_email=(biz.business_email if biz else "") or "",
+                contact_name=f"{user.firstname} {user.lastname}".strip() or user.email,
+                contact_email=user.email,
+                review_link=review_link,
+            )
+            send_template(
+                db,
+                template="new_exporter_pending_review_admin",
+                to=admin.email,
+                subject=subj,
+                html=ahtml,
+                user_id=admin.id,
+                dedupe_key=f"new_exporter_pending:{user.id}:{user.kyc_submitted_at.isoformat()}:{admin.id}",
+            )
+    except Exception:  # noqa: BLE001
+        import traceback as _tb
+        _tb.print_exc()
+
+    return success({
+        "kyc_status": user.kyc_status,
+        "kyc_submitted_at": user.kyc_submitted_at.isoformat(),
+    }, message="Submitted for review. We'll email you once an admin has looked it over.")
 
 
 # ───────────────────────── Stores ─────────────────────────

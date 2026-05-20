@@ -41,6 +41,7 @@ def _serialize_user(u: User) -> dict:
         "is_active": u.is_active,
         "email_verified": u.email_verified,
         "kyc_status": u.kyc_status,
+        "kyc_submitted_at": u.kyc_submitted_at.isoformat() if u.kyc_submitted_at else None,
         "kyc_reviewed_at": u.kyc_reviewed_at.isoformat() if u.kyc_reviewed_at else None,
         "kyc_rejection_reason": u.kyc_rejection_reason,
         "totp_enabled": u.totp_enabled,
@@ -119,10 +120,23 @@ def kyc_queue(
     p: int = Query(default=0, ge=0),
     len_: int = Query(default=50, ge=1, le=200, alias="len"),
 ):
-    """List pending exporter KYC applications."""
-    q = db.query(User).filter(User.role == ROLE_EXPORTER, User.kyc_status == "pending")
+    """List exporter KYC applications that are *ready for review*.
+
+    "Ready" = pending status AND the exporter has pressed "Submit for
+    review" (kyc_submitted_at is set). Exporters who've signed up but
+    not yet completed + submitted their profile are deliberately
+    excluded - there's nothing for an admin to review, and surfacing
+    them invites approving an empty application.
+
+    Oldest submission first so the queue is FIFO.
+    """
+    q = db.query(User).filter(
+        User.role == ROLE_EXPORTER,
+        User.kyc_status == "pending",
+        User.kyc_submitted_at.isnot(None),
+    )
     total = q.count()
-    rows = q.order_by(User.time_created.asc()).offset(p * len_).limit(len_).all()
+    rows = q.order_by(User.kyc_submitted_at.asc()).offset(p * len_).limit(len_).all()
     return success({
         "rows": [_serialize_user(u) for u in rows],
         "total_length": total,
@@ -149,6 +163,16 @@ async def kyc_approve(user_id: str, _: User = Depends(require_admin), db: Sessio
         raise fail("User not found", code=404)
     if u.role != ROLE_EXPORTER:
         raise fail("Only exporter accounts go through KYC", code=400)
+    # Structurally prevent approving an exporter who hasn't completed +
+    # submitted their business profile. Without this an admin could approve
+    # an empty application straight from signup - and the FLW subaccount
+    # provisioning below would fail anyway (no bank details on file).
+    if u.kyc_submitted_at is None:
+        raise fail(
+            "This exporter hasn't submitted their profile for review yet. "
+            "They need to complete their business details and bank account first.",
+            code=400,
+        )
 
     u.kyc_status = "approved"
     u.kyc_reviewed_at = datetime.now(timezone.utc)

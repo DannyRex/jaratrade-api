@@ -45,6 +45,13 @@ class User(Base, TimestampMixin):
 
     # KYC review state for exporters (pending | approved | rejected)
     kyc_status: Mapped[str] = mapped_column(String(20), default="pending", nullable=False)
+    # When the exporter pressed "Submit for review" - i.e. completed their
+    # business profile + docs and explicitly handed it to admin. NULL means
+    # they've signed up but haven't submitted yet (kyc_status stays "pending"
+    # the whole time, so this timestamp is what distinguishes "incomplete"
+    # from "awaiting review"). The admin KYC queue only shows rows where this
+    # is non-NULL, so admins can't approve an empty application.
+    kyc_submitted_at: Mapped[Optional["datetime"]] = mapped_column(DateTime, nullable=True)
     kyc_reviewed_at: Mapped[Optional["datetime"]] = mapped_column(DateTime, nullable=True)
     kyc_rejection_reason: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
 

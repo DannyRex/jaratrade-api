@@ -206,6 +206,7 @@ def _seed_demo_users(db: Session) -> None:
         firstname="Adaeze",
         lastname="Okafor",
         kyc_status="approved",
+        kyc_submitted_at=datetime.now(timezone.utc),
         phone="+2348100000001",
         address="6 Ojo Road",
         country="Nigeria",

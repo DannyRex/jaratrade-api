@@ -136,9 +136,11 @@ def test_register_exporter_slim_signup_no_business_or_address(client):
     with SessionLocal() as db:
         user = db.query(User).filter(User.email == "slim-exporter@example.com").first()
         assert user is not None
-        # Exporters still gated on KYC before they can transact
-        assert user.is_active is False
+        # is_active is True from signup so the exporter can log in and
+        # complete their profile. KYC gating is via kyc_status, not is_active.
+        assert user.is_active is True
         assert user.kyc_status == "pending"
+        assert user.kyc_submitted_at is None  # hasn't submitted for review
         # BusinessProfile not created at slim signup - that comes via the
         # profile-update endpoint once the exporter fills in business details
         assert user.business is None
