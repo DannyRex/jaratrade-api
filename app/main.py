@@ -153,6 +153,36 @@ async def validation_exception_handler(_request: Request, exc: RequestValidation
     )
 
 
+@app.exception_handler(Exception)
+async def unhandled_exception_handler(request: Request, exc: Exception):
+    """Catch-all for unhandled 500s.
+
+    Starlette's ServerErrorMiddleware sits OUTSIDE CORSMiddleware, so a raw
+    unhandled exception reaches the browser with no Access-Control-Allow-Origin
+    header - the browser then reports an opaque "Failed to fetch" and the
+    real error is invisible to the client. Echoing the CORS headers here
+    means a 500 surfaces as an actual 500 the frontend can show + log.
+    """
+    import traceback
+    traceback.print_exc()
+
+    headers: dict[str, str] = {}
+    origin = request.headers.get("origin")
+    allowed = settings.cors_origins
+    if origin and ("*" in allowed or origin in allowed):
+        headers["Access-Control-Allow-Origin"] = origin
+        headers["Access-Control-Allow-Credentials"] = "true"
+    return JSONResponse(
+        status_code=500,
+        content={
+            "status": False,
+            "message": "Something went wrong on our end. Please try again.",
+            "errors": ["Internal server error"],
+        },
+        headers=headers,
+    )
+
+
 # ───────────────────────── Health & root ─────────────────────────
 
 @app.get("/")

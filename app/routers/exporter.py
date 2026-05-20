@@ -225,7 +225,19 @@ async def upload_kyc_document(
     if len(content) > 10 * 1024 * 1024:
         raise fail("File too large - keep KYC documents under 10MB.", code=400)
 
-    url = await upload_file(content, filename, folder="kyc")
+    try:
+        url = await upload_file(content, filename, folder="kyc")
+    except Exception as e:  # noqa: BLE001
+        # Surface a clean 502 (carries CORS headers) instead of letting an
+        # unhandled exception become a CORS-less 500 the browser reports
+        # as an opaque "failed to fetch".
+        import traceback as _tb
+        _tb.print_exc()
+        raise fail(
+            "Couldn't store the document - the file host rejected it. "
+            "Please try again shortly or contact support.",
+            code=502,
+        ) from e
     if not url:
         raise fail("Upload failed - please try again.", code=502)
 
@@ -563,11 +575,20 @@ async def add_product_images(
     if not prod or prod.exporter_id != user.id:
         raise fail("Product not found", code=404)
     existing = json.loads(prod.images or "[]")
-    for img in images:
-        content = await img.read()
-        url = await upload_file(content, img.filename or "image.png", folder="products")
-        if url:
-            existing.append(url)
+    try:
+        for img in images:
+            content = await img.read()
+            url = await upload_file(content, img.filename or "image.png", folder="products")
+            if url:
+                existing.append(url)
+    except Exception as e:  # noqa: BLE001
+        import traceback as _tb
+        _tb.print_exc()
+        raise fail(
+            "Couldn't store the image - the file host rejected it. "
+            "Please try again shortly or contact support.",
+            code=502,
+        ) from e
     prod.images = json.dumps(existing)
     db.commit()
     return success({"images": existing})
