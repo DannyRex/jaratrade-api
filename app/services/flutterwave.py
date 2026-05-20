@@ -90,6 +90,78 @@ def build_inline_config(
     }
 
 
+async def create_standard_payment(
+    *,
+    tx_ref: str,
+    amount: float,
+    currency: str,
+    customer: Dict[str, str],
+    order_id: str,
+    redirect_url: str,
+    commission_rate: Optional[float] = None,
+    commission_subaccount_id: Optional[str] = None,
+    seller_subaccount_id: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Create a Flutterwave Standard hosted-checkout session.
+
+    Unlike Inline (which embeds FLW's v3.js into our page and renders a
+    modal), Standard returns a hosted URL the user is redirected to. FLW
+    owns the entire payment page - no script tag for ad-blockers / CDN
+    flakiness / CSP / browser extensions to interfere with.
+
+    Returns:  {"link": "https://checkout.flutterwave.com/<hash>"}
+    On error: raises FlutterwaveError with parsed response body.
+    """
+    rate = 0.02 if commission_rate is None else commission_rate
+    commission_id = commission_subaccount_id or settings.flw_commission_subaccount_id
+
+    subaccounts = []
+    if seller_subaccount_id:
+        subaccounts.append({
+            "id": seller_subaccount_id,
+            "transaction_split_ratio": round((1.0 - rate) * 100, 4),
+            "transaction_charge_type": "percentage",
+        })
+    if commission_id:
+        subaccounts.append({
+            "id": commission_id,
+            "transaction_split_ratio": round(rate * 100, 4),
+            "transaction_charge_type": "percentage",
+        })
+
+    payload: Dict[str, Any] = {
+        "tx_ref": tx_ref,
+        "amount": f"{amount:.2f}",
+        "currency": currency,
+        "redirect_url": redirect_url,
+        "payment_options": "card,banktransfer,ussd",
+        "customer": customer,
+        "customizations": {
+            "title": "Jaratrade",
+            "description": f"Payment for order {order_id}",
+        },
+        "meta": {"order_id": order_id},
+    }
+    if subaccounts:
+        payload["subaccounts"] = subaccounts
+
+    headers = {"Authorization": f"Bearer {settings.flw_secret_key}"}
+    async with httpx.AsyncClient(timeout=20.0, headers=headers) as client:
+        resp = await client.post("https://api.flutterwave.com/v3/payments", json=payload)
+        if resp.status_code >= 400:
+            try:
+                body = resp.json()
+            except Exception:  # noqa: BLE001
+                body = resp.text
+            raise FlutterwaveError(resp.status_code, body)
+        body = resp.json()
+    data = body.get("data") or {}
+    link = data.get("link")
+    if not link:
+        raise FlutterwaveError(502, f"FLW response missing 'link': {body}")
+    return {"link": link, "tx_ref": tx_ref}
+
+
 async def verify_payment(tx_ref: str) -> Dict[str, Any]:
     """Look up a transaction by tx_ref. Returns Flutterwave's data block.
 

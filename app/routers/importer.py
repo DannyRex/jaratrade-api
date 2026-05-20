@@ -40,7 +40,12 @@ from ..services.email import (
     t_review_received,
     t_transaction_limit_warning,
 )
-from ..services.flutterwave import build_inline_config, verify_payment
+from ..services.flutterwave import (
+    FlutterwaveError,
+    build_inline_config,
+    create_standard_payment,
+    verify_payment,
+)
 from ..services.fx import convert as fx_convert
 
 router = APIRouter(prefix="/imp", tags=["importer"])
@@ -682,6 +687,98 @@ async def init_payment(
         seller_subaccount_id=seller_sub,
     )
     return success(config)
+
+
+@router.post("/payment/init_standard")
+@limiter.limit("20/minute")
+async def init_payment_standard(
+    request: Request,
+    user: User = Depends(require_importer),
+    db: Session = Depends(get_db),
+    order_id: str = Form(...),
+):
+    """Create a Flutterwave Standard hosted-checkout session.
+
+    Returns a URL the frontend redirects the user to. FLW hosts the whole
+    payment page - no JS bundle to load on our side, immune to ad-blockers,
+    browser-extension interference, and Cloudflare 404 caching that
+    plagued the inline /payment/init flow.
+    """
+    order = db.get(Order, order_id)
+    if not order or order.importer_id != user.id:
+        raise fail("Order not found", code=404)
+    if order.status != "pending":
+        raise fail("Payment already initialised for this order")
+
+    # Same plan-cap check as the inline init.
+    plan = _resolve_importer_plan(db, user)
+    if plan and float(plan.transaction_limit) > 0:
+        order_in_plan_ccy = fx_convert(float(order.total), order.currency, plan.currency)
+        if order_in_plan_ccy is not None:
+            _reset_monthly_window_if_needed(user)
+            prospective = float(user.monthly_spent or 0) + order_in_plan_ccy
+            cap = float(plan.transaction_limit)
+            if prospective > cap:
+                raise fail(
+                    f"This order would exceed your {plan.title} monthly limit "
+                    f"({plan.currency} {cap:.2f}; this order ≈ {plan.currency} {order_in_plan_ccy:.2f}). "
+                    "Upgrade to Premium for unlimited transactions.",
+                    code=402,
+                )
+
+    # Reuse pending Payment row if one exists (same idempotency rule as
+    # the inline endpoint).
+    existing_pending = (
+        db.query(Payment)
+        .filter(Payment.order_id == order.id, Payment.status == "pending")
+        .order_by(Payment.time_created.desc())
+        .first()
+    )
+    if existing_pending:
+        tx_ref = existing_pending.tx_ref
+    else:
+        tx_ref = "JARA" + secrets.token_urlsafe(8).replace("-", "")[:12]
+        db.add(Payment(
+            order_id=order.id,
+            tx_ref=tx_ref,
+            amount=order.total,
+            currency=order.currency,
+            status="pending",
+        ))
+        db.commit()
+
+    from ..routers.settings_router import read_commission_rate, read_commission_subaccount_id
+
+    commission_decimal = read_commission_rate(db) / 100.0
+    commission_sub = read_commission_subaccount_id(db)
+    seller_sub: Optional[str] = None
+    if order.exporter_id:
+        exporter = db.get(User, order.exporter_id)
+        seller_sub = exporter.flw_subaccount_id if exporter else None
+
+    # FLW redirects the user back here after they pay (or cancel). The pay
+    # page reads the query string and verifies via /payment/verify.
+    redirect_url = f"{settings.site_url}/importer/orders/{order.id}/pay?from=flw"
+
+    try:
+        result = await create_standard_payment(
+            tx_ref=tx_ref,
+            amount=float(order.total),
+            currency=order.currency,
+            customer={"email": user.email, "phonenumber": user.phone or "", "name": user.fullname},
+            order_id=order.order_number,
+            redirect_url=redirect_url,
+            commission_rate=commission_decimal,
+            commission_subaccount_id=commission_sub,
+            seller_subaccount_id=seller_sub,
+        )
+    except FlutterwaveError as e:
+        raise fail(
+            f"Flutterwave rejected the checkout request: {e.status_code} - {e.body}",
+            code=502,
+        )
+
+    return success({"link": result["link"], "tx_ref": tx_ref})
 
 
 @router.get("/payment/verify")
