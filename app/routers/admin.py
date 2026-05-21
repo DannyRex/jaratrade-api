@@ -423,9 +423,13 @@ def orders_stats(
         if has_payment:
             pending_payouts += 1
 
+    # "Open disputes" means unresolved work: a freshly-raised dispute ('open')
+    # OR one an admin has acknowledged but not yet closed ('in_review'). The
+    # status was previously checked against a non-existent 'investigating'
+    # value, so acknowledged disputes silently dropped off this card.
     open_disputes = (
         db.query(func.count(Dispute.id))
-        .filter(Dispute.status.in_(["open", "investigating"]))
+        .filter(Dispute.status.in_(["open", "in_review"]))
         .scalar()
     ) or 0
 
@@ -508,10 +512,20 @@ def list_admin_orders(
             db.query(Payout).filter(Payout.order_id.in_(order_ids)).all() if order_ids else []
         )
     }
+    # has_dispute drives a warning icon labelled "open dispute" in the grid,
+    # so only flag orders with an UNRESOLVED dispute (open / in_review) — a
+    # resolved or rejected dispute is closed and shouldn't raise the flag.
     disputed = set()
     if order_ids:
-        for d in db.query(Dispute).filter(Dispute.order_id.in_(order_ids)).all():
-            disputed.add(d.order_id)
+        for (oid,) in (
+            db.query(Dispute.order_id)
+            .filter(
+                Dispute.order_id.in_(order_ids),
+                Dispute.status.in_(["open", "in_review"]),
+            )
+            .all()
+        ):
+            disputed.add(oid)
 
     rows = []
     for o in orders:
@@ -576,7 +590,13 @@ def get_admin_order(
     items = db.query(OrderItem).filter(OrderItem.order_id == order.id).all()
     payments = db.query(Payment).filter(Payment.order_id == order.id).all()
     payouts = db.query(Payout).filter(Payout.order_id == order.id).all()
-    dispute = db.query(Dispute).filter(Dispute.order_id == order.id).first()
+    # Most recent dispute — an order can have several over its lifetime.
+    dispute = (
+        db.query(Dispute)
+        .filter(Dispute.order_id == order.id)
+        .order_by(desc(Dispute.time_created))
+        .first()
+    )
 
     return success({
         "id": order.id,

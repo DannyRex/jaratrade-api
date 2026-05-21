@@ -9,14 +9,14 @@ from datetime import datetime, timedelta, timezone
 from typing import Optional
 
 from fastapi import APIRouter, Depends, Form, Query
-from sqlalchemy import desc
+from sqlalchemy import desc, func
 from sqlalchemy.orm import Session
 
 from ..config import get_settings
 from ..database import get_db
 from ..deps import require_admin, require_exporter, require_importer
 from ..envelope import fail, success
-from ..models import Dispute, Order, Payment, Product, User
+from ..models import Dispute, Order, Payment, Payout, Product, User
 from ..services.email import (
     send_template,
     t_dispute_raised_buyer,
@@ -217,7 +217,21 @@ def admin_list(
         item["importer_email"] = importer.email if importer else None
         item["importer_name"] = importer.fullname if importer else None
         out.append(item)
-    return success({"rows": out, "total_length": total, "page": p, "len": len_})
+
+    # Counts across ALL disputes (independent of the status filter) so the
+    # admin UI can show how many sit under each tab. Without this an
+    # acknowledged ('in_review') dispute is easy to miss, since the page
+    # lands on the 'open' tab by default.
+    counts_raw = dict(
+        db.query(Dispute.status, func.count(Dispute.id)).group_by(Dispute.status).all()
+    )
+    counts = {
+        s: int(counts_raw.get(s, 0))
+        for s in ("open", "in_review", "resolved", "rejected")
+    }
+    return success({
+        "rows": out, "total_length": total, "page": p, "len": len_, "counts": counts,
+    })
 
 
 @admin_router.post("/{dispute_id}/acknowledge")
@@ -265,11 +279,35 @@ async def resolve(
         )
         if not payment:
             raise fail("No successful payment found for this order; cannot refund")
+        # Money-safety guard: if the seller has already been paid out for this
+        # order, refunding the buyer now would pay out twice. The payout has to
+        # be reversed before a refund can be issued.
+        already_paid_out = (
+            db.query(Payout)
+            .filter(
+                Payout.order_id == d.order_id,
+                Payout.status.in_(["sent", "completed"]),
+            )
+            .first()
+        )
+        if already_paid_out:
+            raise fail(
+                "The seller has already been paid out for this order — reverse "
+                "the payout before issuing a refund.",
+                code=409,
+            )
         payload = json.loads(payment.provider_payload or "{}")
         flw_tx_id = str(payload.get("id") or payload.get("transaction_id") or "")
         if not flw_tx_id:
             raise fail("Original Flutterwave transaction ID not on record; cannot auto-refund. Issue manually and mark dismissed.")
         amount = refund_amount if refund_amount is not None else float(payment.amount)
+        if amount <= 0:
+            raise fail("Refund amount must be greater than zero")
+        if amount > float(payment.amount):
+            raise fail(
+                f"Refund amount ({amount:.2f}) can't exceed what the buyer "
+                f"paid ({float(payment.amount):.2f})"
+            )
         try:
             flw = await refund_payment(flw_transaction_id=flw_tx_id, amount=amount)
         except Exception as e:  # noqa: BLE001
@@ -278,6 +316,7 @@ async def resolve(
         d.refund_currency = payment.currency
         d.refund_tx_ref = flw.get("tx_ref") or payment.tx_ref
         d.refund_payload = json.dumps(flw)
+        payment.status = "refunded"
         order.status = "refunded"
         # Restock items returned to the seller
         for item in order.items:

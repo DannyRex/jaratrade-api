@@ -12,13 +12,21 @@ import json
 from datetime import datetime, timezone
 
 from app.database import SessionLocal
-from app.models import Order, Payment, User
+from app.models import Order, Payment, Product, User
 
 
 def _place_paid_order(importer_token, client):
     """Buyer places an order + we mark it paid via direct DB write."""
     pr = client.get("/public/products", params={"len": 1})
     pid = pr.json()["payload"]["data"][0]["id"]
+    # The seed ships the shared product with only 80 units and the suite
+    # places many orders; top it up so later checkouts don't fail the
+    # "out of stock" pre-flight check.
+    with SessionLocal() as db:
+        prod = db.get(Product, pid)
+        if prod and prod.stock_quantity < 1000:
+            prod.stock_quantity = 100_000
+            db.commit()
     cart_r = client.post(
         "/imp/cart",
         headers={"Authorization": f"Bearer {importer_token}"},
@@ -179,3 +187,66 @@ def test_admin_orders_requires_admin(client, importer_token):
     r = client.get("/adm/orders", headers={"Authorization": f"Bearer {importer_token}"})
     # require_admin returns 401/403 - either signals "not allowed"
     assert r.status_code in (401, 403)
+
+
+def test_orders_stats_open_disputes_includes_in_review(client, importer_token, admin_token):
+    """Regression: orders/stats counted disputes against a non-existent
+    'investigating' status, so acknowledged ('in_review') disputes silently
+    dropped off the 'Open disputes' card. They must still be counted."""
+    order_id = _place_paid_order(importer_token, client)
+    with SessionLocal() as db:
+        db.get(Order, order_id).status = "delivered"
+        db.commit()
+
+    r = client.post(
+        f"/imp/order/{order_id}/dispute",
+        headers={"Authorization": f"Bearer {importer_token}"},
+        data={"reason": "damaged", "description": "Arrived damaged and unsaleable."},
+    )
+    assert r.status_code == 200, r.text
+    dispute_id = r.json()["payload"]["id"]
+    ack = client.post(
+        f"/adm/disputes/{dispute_id}/acknowledge",
+        headers={"Authorization": f"Bearer {admin_token}"},
+    )
+    assert ack.status_code == 200, ack.text
+    assert ack.json()["payload"]["status"] == "in_review"
+
+    r = client.get("/adm/orders/stats", headers={"Authorization": f"Bearer {admin_token}"})
+    assert r.status_code == 200
+    assert r.json()["payload"]["open_disputes"] >= 1
+
+
+def test_has_dispute_flag_clears_when_dispute_resolved(client, importer_token, admin_token):
+    """has_dispute should flag orders with an UNRESOLVED dispute only — once
+    the dispute is resolved/rejected the warning icon must clear."""
+    order_id = _place_paid_order(importer_token, client)
+    with SessionLocal() as db:
+        db.get(Order, order_id).status = "delivered"
+        db.commit()
+
+    r = client.post(
+        f"/imp/order/{order_id}/dispute",
+        headers={"Authorization": f"Bearer {importer_token}"},
+        data={"reason": "wrong_item", "description": "Sent the wrong product entirely."},
+    )
+    assert r.status_code == 200, r.text
+    dispute_id = r.json()["payload"]["id"]
+
+    def _row():
+        rr = client.get(
+            "/adm/orders", params={"q": order_id},
+            headers={"Authorization": f"Bearer {admin_token}"},
+        )
+        return next(x for x in rr.json()["payload"]["rows"] if x["id"] == order_id)
+
+    assert _row()["has_dispute"] is True
+
+    # Resolve as a dismissal (no money movement) -> dispute closed.
+    res = client.post(
+        f"/adm/disputes/{dispute_id}/resolve",
+        headers={"Authorization": f"Bearer {admin_token}"},
+        data={"resolution": "dismissed"},
+    )
+    assert res.status_code == 200, res.text
+    assert _row()["has_dispute"] is False
