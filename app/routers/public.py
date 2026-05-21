@@ -211,7 +211,7 @@ def list_products(
         q = q.filter(Product.store_id == store)
     total = q.count()
     # Ranking signals:
-    #   - Sponsored (promote=1) always leads — paid placement.
+    #   - Sponsored (promote=1) always leads - paid placement.
     #   - User's explicit sort comes next; if they pick price/popular we
     #     honour it strictly. Freshness only orders the "newest" default,
     #     and acts as a final tiebreaker elsewhere.
@@ -223,7 +223,7 @@ def list_products(
     elif sort_by == "popular":
         q = q.order_by(desc(Product.promote), desc(Product.views), fresh_first)
     else:
-        # Default: "newest" — surface freshly-confirmed stock first, then
+        # Default: "newest" - surface freshly-confirmed stock first, then
         # genuinely recent listings.
         q = q.order_by(desc(Product.promote), fresh_first, desc(Product.time_created))
     items = q.offset(p * len_).limit(len_).all()

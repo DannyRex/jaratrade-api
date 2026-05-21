@@ -60,7 +60,7 @@ def _serialise_for_audit(data: Dict[str, Any]) -> str:
 
 
 def _handle_charge(event_data: Dict[str, Any], db: Session) -> Dict[str, Any]:
-    """charge.completed — buyer's card/transfer was processed."""
+    """charge.completed - buyer's card/transfer was processed."""
     tx_ref = event_data.get("tx_ref") or event_data.get("txRef")
     if not tx_ref:
         return {"handled": False, "reason": "no tx_ref"}
@@ -84,7 +84,7 @@ def _handle_charge(event_data: Dict[str, Any], db: Session) -> Dict[str, Any]:
 
 
 def _handle_transfer(event_data: Dict[str, Any], db: Session) -> Dict[str, Any]:
-    """transfer.completed — a seller payout settled or bounced."""
+    """transfer.completed - a seller payout settled or bounced."""
     reference = event_data.get("reference")
     if not reference:
         return {"handled": False, "reason": "no reference"}

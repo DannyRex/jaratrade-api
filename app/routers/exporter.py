@@ -613,12 +613,13 @@ def delete_product_image(
 # ───────────────────────── Order updates ─────────────────────────
 
 _ALLOWED_STATUS_TRANSITIONS = {
-    # "confirmed" and "preparing" are optional bookkeeping states; exporters
-    # can skip straight from paid -> shipped if they want.
-    "paid": {"confirmed", "preparing", "shipped", "cancelled"},
-    "confirmed": {"preparing", "shipped", "cancelled"},
+    # Orders move strictly forward, one step at a time, so a status can never
+    # be set out of sequence or skipped. An order can be cancelled at any
+    # point up until it ships; once shipped it can only be delivered.
+    "paid": {"confirmed", "cancelled"},
+    "confirmed": {"preparing", "cancelled"},
     "preparing": {"shipped", "cancelled"},
-    "shipped": {"delivered", "cancelled"},
+    "shipped": {"delivered"},
     "delivered": set(),  # terminal from exporter side; buyer may still confirm receipt
     "cancelled": set(),
     "failed": set(),

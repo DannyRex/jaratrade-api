@@ -292,7 +292,7 @@ async def resolve(
         )
         if already_paid_out:
             raise fail(
-                "The seller has already been paid out for this order — reverse "
+                "The seller has already been paid out for this order - reverse "
                 "the payout before issuing a refund.",
                 code=409,
             )

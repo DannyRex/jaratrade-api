@@ -513,7 +513,7 @@ def list_admin_orders(
         )
     }
     # has_dispute drives a warning icon labelled "open dispute" in the grid,
-    # so only flag orders with an UNRESOLVED dispute (open / in_review) — a
+    # so only flag orders with an UNRESOLVED dispute (open / in_review) - a
     # resolved or rejected dispute is closed and shouldn't raise the flag.
     disputed = set()
     if order_ids:
@@ -590,7 +590,7 @@ def get_admin_order(
     items = db.query(OrderItem).filter(OrderItem.order_id == order.id).all()
     payments = db.query(Payment).filter(Payment.order_id == order.id).all()
     payouts = db.query(Payout).filter(Payout.order_id == order.id).all()
-    # Most recent dispute — an order can have several over its lifetime.
+    # Most recent dispute - an order can have several over its lifetime.
     dispute = (
         db.query(Dispute)
         .filter(Dispute.order_id == order.id)

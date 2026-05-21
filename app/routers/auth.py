@@ -85,12 +85,6 @@ def _do_login(db: Session, email: str, password: str, expected_role: str):
             {"requires_verification": True, "email": user.email, "role": user.role},
             message="Please verify your email before logging in - we just sent you a fresh link.",
         )
-    # 2FA challenge: don't issue a token yet; frontend will call /auth/2fa/login
-    if user.totp_enabled:
-        return success(
-            {"requires_2fa": True, "email": user.email},
-            message="Two-factor code required",
-        )
     token = create_access_token(subject=user.id, role=user.role)
     return success(_login_payload(user, token), message="Login successful")
 

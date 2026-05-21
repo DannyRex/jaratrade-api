@@ -391,7 +391,15 @@ def create_order(
         first_prod = db.get(Product, cart.items[0].product_id)
         exporter_id = first_prod.exporter_id if first_prod else None
 
-    order_number = "JARA" + secrets.token_urlsafe(6)[:10].upper()
+    # Predictable order number: JT + first 3 of the buyer id + first 3 of the
+    # seller id + 2-digit day of the month. A "-N" counter is appended only
+    # when that base already exists (same buyer, seller and day).
+    _order_base = f"JT{user.id[:3]}{(exporter_id or '000')[:3]}{datetime.now(timezone.utc):%d}".upper()
+    order_number = _order_base
+    _order_seq = 2
+    while db.query(Order).filter(Order.order_number == order_number).first():
+        order_number = f"{_order_base}-{_order_seq}"
+        _order_seq += 1
     order = Order(
         order_number=order_number,
         cart_id=cart.id,

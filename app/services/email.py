@@ -269,7 +269,7 @@ def _header() -> str:
 def _footer() -> str:
     return f"""<tr><td style="padding:26px 40px 32px 40px;font-family:{_FONT};border-top:1px solid {_LINE};background:#fbfbfc;">
 <p style="margin:0 0 6px 0;font-size:13px;font-weight:700;color:{_INK};">Jaratrade</p>
-<p style="margin:0 0 14px 0;font-size:12px;line-height:1.6;color:{_MUTED};">The B2B marketplace connecting Nigerian exporters with UK importers &mdash; with funds held securely until goods are received.</p>
+<p style="margin:0 0 14px 0;font-size:12px;line-height:1.6;color:{_MUTED};">The B2B marketplace connecting Nigerian exporters with UK importers - with funds held securely until goods are received.</p>
 <p style="margin:0;font-size:11px;line-height:1.7;color:{_FAINT};">You're receiving this transactional email because of activity on your Jaratrade account.<br>
 &copy; Jaratrade Ltd &nbsp;&middot;&nbsp; <a href="{_SITE}" style="color:{_MUTED};text-decoration:underline;">jaratrade.com</a> &nbsp;&middot;&nbsp; <a href="{_SITE}/contact" style="color:{_MUTED};text-decoration:underline;">Contact support</a></p>
 </td></tr>"""
@@ -474,7 +474,7 @@ def t_account_under_review(name: str) -> tuple[str, str]:
     content = (
         _eyebrow(f"Hi {name or 'there'},")
         + _h1("Your account is under review.")
-        + _p("Thanks for registering your business with Jaratrade. Our team is verifying your details &mdash; this usually takes 1&ndash;2 business days.")
+        + _p("Thanks for registering your business with Jaratrade. Our team is verifying your details - this usually takes 1-2 business days.")
         + _panel("Status", "Under review", sub="We'll email you the moment it's activated.")
         + _p("Nothing more is needed from you right now. Hang tight.", muted=True)
     )
@@ -501,7 +501,7 @@ def t_new_exporter_pending_review_admin(
         + _p("A new exporter just signed up and is queued for KYC review.")
         + f'<table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="margin:6px 0 18px 0;"><tr><td style="background:{_TINT};border:1px solid #e3e8f3;border-radius:12px;padding:18px 22px;">{rows}</td></tr></table>'
         + _button("Open KYC queue", review_link)
-        + _p("If the exporter hasn't finished their business profile yet, they'll show as pending &mdash; their documents land as they fill them in.", muted=True, size=13)
+        + _p("If the exporter hasn't finished their business profile yet, they'll show as pending - their documents land as they fill them in.", muted=True, size=13)
     )
     return subject, _layout(content, preheader="An exporter is waiting for KYC review.")
 
@@ -510,7 +510,7 @@ def t_account_activated(name: str, login_link: str) -> tuple[str, str]:
     subject = "Your Jaratrade account is now active"
     content = (
         _eyebrow(f"Hi {name or 'there'},")
-        + _h1("You're verified &mdash; welcome aboard.")
+        + _h1("You're verified - welcome aboard.")
         + _p("Your Jaratrade account has been approved and is now fully active. You can log in and start trading right away.")
         + _button("Log in to Jaratrade", login_link)
         + _note("<strong>Tip:</strong> complete your storefront and product listings to start appearing in buyer searches.")
@@ -538,7 +538,7 @@ def t_password_reset(name: str, reset_link: str) -> tuple[str, str]:
         + _h1("Reset your password.")
         + _p("We received a request to reset your Jaratrade password. Choose a new one with the button below.")
         + _button("Reset my password", reset_link)
-        + _p("This link expires in 30 minutes. If you didn't request a reset, you can safely ignore this email &mdash; your password won't change.", muted=True, size=13)
+        + _p("This link expires in 30 minutes. If you didn't request a reset, you can safely ignore this email - your password won't change.", muted=True, size=13)
     )
     return subject, _layout(content, preheader="Reset your Jaratrade password (link expires in 30 minutes).")
 
@@ -571,14 +571,14 @@ def t_order_placed_buyer(
     totals.append(("Platform fee", platform_fee, False))
     totals.append(("Order total", total, True))
     order_details = _info_rows([
-        ("Order date", order_date or "&mdash;"),
+        ("Order date", order_date or "-"),
         ("Shipping", ship_label),
         ("Payment", "Awaiting payment"),
     ])
     content = (
         _eyebrow(f"Hi {name or 'there'},")
         + _h1("Thank you for your order.")
-        + _p("It's confirmed. We've shared it with the seller &mdash; you'll get an email the moment it ships.", muted=True)
+        + _p("It's confirmed. We've shared it with the seller - you'll get an email the moment it ships.", muted=True)
         + _panel("Order number", order_no, sub=(f"Placed {order_date}" if order_date else ""))
         + _button("Track your order", link)
         + _detail_columns("Delivery details", _delivery_html(delivery), "Order details", order_details)
@@ -638,7 +638,7 @@ def t_order_status_update(name: str, order_no: str, status: str, extra: str = ""
         "paid": "We've confirmed your payment. The seller has been notified to prepare your shipment.",
         "confirmed": "The seller has confirmed your order and will begin preparing it.",
         "preparing": "The seller is preparing your order for shipment.",
-        "shipped": "Good news &mdash; your order is on its way.",
+        "shipped": "Good news - your order is on its way.",
         "delivered": "Your order has been delivered. Please confirm receipt so the seller can be paid.",
         "cancelled": "Your order has been cancelled. Any payment made will be returned.",
         "refunded": "A refund has been issued to your original payment method.",
@@ -660,11 +660,11 @@ def t_payment_invoice(name: str, order_no: str, total: str, paid_on: str) -> tup
     content = (
         _eyebrow(f"Hi {name or 'there'},")
         + _h1("Payment received.")
-        + _p("Thank you &mdash; your payment has cleared. Here's your receipt.", muted=True)
+        + _p("Thank you - your payment has cleared. Here's your receipt.", muted=True)
         + _panel("Amount paid", str(total), sub=f"Order {order_no}")
         + _detail_columns(
             "Receipt",
-            _info_rows([("Order number", order_no), ("Paid on", paid_on or "&mdash;")]),
+            _info_rows([("Order number", order_no), ("Paid on", paid_on or "-")]),
             "Payment",
             _info_rows([("Method", "Card / bank transfer"), ("Status", "Successful")]),
         )
@@ -679,7 +679,7 @@ def t_transaction_limit_warning(name: str, percent_used: int, plan_name: str) ->
         _eyebrow(f"Hi {name or 'there'},")
         + _h1("You're approaching your plan limit.")
         + _panel("Monthly limit used", f"{percent_used}%", sub=f"On your {plan_name} plan")
-        + _p("Upgrade to Premium for unlimited transactions, lower fees and priority support &mdash; so a busy month never slows you down.")
+        + _p("Upgrade to Premium for unlimited transactions, lower fees and priority support - so a busy month never slows you down.")
         + _button("View upgrade options", f"{_SITE}/pricing")
     )
     return subject, _layout(content, preheader=f"You've used {percent_used}% of your {plan_name} limit.")
@@ -726,7 +726,7 @@ def t_2fa_enabled(name: str) -> tuple[str, str]:
         _eyebrow(f"Hi {name or 'there'},")
         + _h1("Two-factor authentication is on.")
         + _p("Your Jaratrade account is now protected with two-factor authentication. You'll enter a code from your authenticator app each time you log in.")
-        + _note("<strong>Didn't enable this?</strong> Contact support immediately &mdash; someone may have access to your account.")
+        + _note("<strong>Didn't enable this?</strong> Contact support immediately - someone may have access to your account.")
     )
     return subject, _layout(content, preheader="2FA is now active on your Jaratrade account.")
 
@@ -805,7 +805,7 @@ def t_subscription_renewal_failed(name: str, plan_title: str, attempts: int, man
         _eyebrow(f"Hi {name or 'there'},")
         + _h1("We couldn't renew your subscription.")
         + _p(f"We tried to renew your <strong>{plan_title}</strong> plan but the charge didn't go through (attempt {attempts}).")
-        + _p("Update your payment method to keep your premium access &mdash; it only takes a moment.")
+        + _p("Update your payment method to keep your premium access - it only takes a moment.")
         + _button("Update payment method", manage_link)
         + _note("If we can't process the renewal after three attempts, your account will move to the free tier.")
     )
@@ -844,14 +844,14 @@ def t_dispute_raised_seller(name: str, order_no: str, importer_name: str, reason
         + _h1("A dispute was filed.")
         + _p(f"<strong>{importer_name}</strong> has raised a dispute on order <strong>{order_no}</strong>. Our team is reviewing it.")
         + _panel("Dispute reason", str(reason).replace("_", " ").title(), sub=f"Order {order_no}")
-        + _note("There's nothing you need to do right now &mdash; we'll be in touch if we need information from you. The order's payout is paused until the dispute is resolved.")
+        + _note("There's nothing you need to do right now - we'll be in touch if we need information from you. The order's payout is paused until the dispute is resolved.")
     )
     return subject, _layout(content, preheader=f"{importer_name} disputed order {order_no}.")
 
 
 def t_dispute_resolved_buyer(name: str, order_no: str, resolution: str, amount: str = "") -> tuple[str, str]:
     blurb = {
-        "refund": f"We've issued a refund of <strong>{amount}</strong> to your original payment method. It can take 3&ndash;7 business days to appear.",
+        "refund": f"We've issued a refund of <strong>{amount}</strong> to your original payment method. It can take 3-7 business days to appear.",
         "replacement": "A replacement shipment is being arranged. You'll receive tracking details once the seller dispatches it.",
         "dismissed": "After reviewing the evidence, we weren't able to grant a refund or replacement for this dispute.",
     }.get(resolution, f"Resolution: {resolution}.")

@@ -204,7 +204,6 @@ from .routers import (  # noqa: E402
     exporter,
     admin,
     admin_users,
-    two_factor,
     subscriptions,
     disputes,
     settings_router,
@@ -216,7 +215,6 @@ from .routers import (  # noqa: E402
 
 app.include_router(public.router)
 app.include_router(auth.router)
-app.include_router(two_factor.router)
 app.include_router(importer.router)
 app.include_router(exporter.router)
 app.include_router(admin.router)

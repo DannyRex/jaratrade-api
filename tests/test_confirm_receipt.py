@@ -86,26 +86,27 @@ def test_exporter_update_order_emails_importer_and_stamps_time(
         db.commit()
         before_time = order.time_updated
 
+    # paid -> confirmed is the first valid step in the strict status sequence.
     r = client.post(
         "/exp/update_order",
         headers={"Authorization": f"Bearer {exporter_token}"},
-        data={"order_id": order_id, "status": "shipped"},
+        data={"order_id": order_id, "status": "confirmed"},
     )
     assert r.status_code == 200, r.text
-    assert r.json()["payload"]["status"] == "shipped"
+    assert r.json()["payload"]["status"] == "confirmed"
 
     with SessionLocal() as db:
         order = db.get(Order, order_id)
-        assert order.status == "shipped"
+        assert order.status == "confirmed"
         assert order.time_updated > before_time
         # Notification log carries the dedupe key we used
         log = (
             db.query(NotificationLog)
-            .filter(NotificationLog.dedupe_key == f"order_status:shipped:{order_id}")
+            .filter(NotificationLog.dedupe_key == f"order_status:confirmed:{order_id}")
             .first()
         )
         assert log is not None
-        assert log.template == "order_status_shipped"
+        assert log.template == "order_status_confirmed"
 
 
 def test_exporter_invalid_status_transition_rejected(

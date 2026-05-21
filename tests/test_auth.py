@@ -1,6 +1,4 @@
-"""Auth flow tests: login per role, role guard, registration, 2FA challenge."""
-import pyotp
-
+"""Auth flow tests: login per role, role guard, registration."""
 from app.seed import SEED_IMPORTER_PASSWORD
 
 
@@ -144,39 +142,3 @@ def test_register_exporter_slim_signup_no_business_or_address(client):
         # BusinessProfile not created at slim signup - that comes via the
         # profile-update endpoint once the exporter fills in business details
         assert user.business is None
-
-
-def test_2fa_enroll_confirm_login_flow(client, importer_token):
-    # 1. Enroll
-    r = client.post("/auth/2fa/enroll", headers={"Authorization": f"Bearer {importer_token}"})
-    assert r.status_code == 200
-    secret = r.json()["payload"]["secret"]
-
-    # 2. Confirm with the right code
-    code = pyotp.TOTP(secret).now()
-    r = client.post("/auth/2fa/confirm", headers={"Authorization": f"Bearer {importer_token}"},
-                    data={"code": code})
-    assert r.status_code == 200
-    assert r.json()["payload"]["enabled"] is True
-
-    # 3. Plain login now returns requires_2fa instead of a token
-    r = client.post("/imp/login", json={"email": "importer@jaratrade.com", "password": SEED_IMPORTER_PASSWORD})
-    assert r.status_code == 200
-    body = r.json()["payload"]
-    assert body.get("requires_2fa") is True
-    assert "token" not in body
-
-    # 4. Use /auth/2fa/login with code to actually log in
-    code = pyotp.TOTP(secret).now()
-    r = client.post("/auth/2fa/login", json={
-        "email": "importer@jaratrade.com",
-        "password": SEED_IMPORTER_PASSWORD,
-        "code": code,
-    })
-    assert r.status_code == 200
-    assert r.json()["payload"]["token"]
-
-    # 5. Disable 2FA so subsequent tests still work
-    r = client.post("/auth/2fa/disable", headers={"Authorization": f"Bearer {importer_token}"},
-                    data={"password": SEED_IMPORTER_PASSWORD})
-    assert r.status_code == 200

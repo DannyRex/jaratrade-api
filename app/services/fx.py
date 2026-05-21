@@ -59,7 +59,7 @@ def _override_rate(db: Optional[Session], from_currency: str, to_currency: str) 
 
     Looked-up keys (first hit wins):
       fx_rate_{FROM}_{TO}      e.g. fx_rate_NGN_GBP  (1 NGN = X GBP)
-      fx_rate_{TO}_{FROM}      reciprocal — we invert it
+      fx_rate_{TO}_{FROM}      reciprocal - we invert it
     """
     if db is None:
         return None
