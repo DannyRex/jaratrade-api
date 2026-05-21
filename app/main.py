@@ -44,6 +44,24 @@ def _apply_migrations() -> None:
         Base.metadata.create_all(bind=engine)
 
 
+async def _log_outbound_ip() -> None:
+    """Log the server's outbound IP on startup.
+
+    Flutterwave's Transfers API (used for seller payouts) only accepts
+    requests from whitelisted IPs, so the egress IP must be added to the
+    Flutterwave dashboard. Printing it here keeps the value to whitelist
+    visible in every deploy's logs.
+    """
+    try:
+        import httpx
+
+        async with httpx.AsyncClient(timeout=6.0) as client:
+            resp = await client.get("https://api.ipify.org")
+        print(f"[network] outbound IP (whitelist this with Flutterwave): {resp.text.strip()}")
+    except Exception as e:  # noqa: BLE001
+        print(f"[network] could not determine outbound IP: {e!r}")
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     _apply_migrations()
@@ -56,6 +74,9 @@ async def lifespan(app: FastAPI):
             # there from the winning worker. Log and move on.
             db.rollback()
             print(f"[seed] skipped ({e.__class__.__name__}); another worker probably won the race")
+    # Real deploys only (Postgres) - skip the network probe under tests/sqlite.
+    if settings.database_url.startswith("postgres"):
+        await _log_outbound_ip()
     yield
 
 
