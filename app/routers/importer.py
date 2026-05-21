@@ -427,9 +427,27 @@ def create_order(
     cart.status = "ordered"
     db.commit()
 
-    # Notify both parties
+    # Notify both parties. Build the rich line-item + cost detail once so the
+    # buyer's confirmation and the seller's notification share it.
+    email_items = [
+        {
+            "name": it.product_name,
+            "quantity": it.quantity,
+            "unit_price": float(it.unit_price),
+            "subtotal": float(it.subtotal),
+        }
+        for it in order.items
+    ]
+    order_date = order.time_created.strftime("%d %b %Y")
+
     order_link = f"{settings.site_url}/importer/orders/{order.id}"
-    subject, html = t_order_placed_buyer(user.firstname or "there", order.order_number, f"{total:.2f}", order_link)
+    subject, html = t_order_placed_buyer(
+        user.firstname or "there", order.order_number, order_link,
+        currency=order.currency, items=email_items,
+        subtotal=subtotal, logistics_fee=logistics_fee, platform_fee=platform_fee,
+        total=total, delivery=delivery, order_date=order_date,
+        shipping_mode=order.shipping_mode,
+    )
     send_template(
         db, template="order_placed_buyer", to=user.email, subject=subject, html=html,
         user_id=user.id, dedupe_key=f"order_placed_buyer:{order.id}",
@@ -442,8 +460,10 @@ def create_order(
                 exporter.firstname or "there",
                 order.order_number,
                 user.fullname or user.email,
-                f"{total:.2f}",
                 seller_link,
+                currency=order.currency, items=email_items,
+                subtotal=subtotal, logistics_fee=logistics_fee,
+                platform_fee=platform_fee, total=total, order_date=order_date,
             )
             send_template(
                 db, template="order_received_seller", to=exporter.email, subject=subject, html=html,

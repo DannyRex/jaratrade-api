@@ -8,7 +8,7 @@ Architecture:
   to deter spam, so going over HTTPS port 443 to api.resend.com is the only
   reliable channel from a hobby-tier container.
 - stdout fallback for dev (no creds = print to console).
-- Templates are pure Python f-strings - swap to Jinja2 if templates grow.
+- Templates are hand-rolled, email-client-safe HTML (see the template section).
 """
 from __future__ import annotations
 
@@ -221,39 +221,264 @@ def send_template(
     return True
 
 
-# ───────────────────────── Template helpers ─────────────────────────
-# Each function returns (subject, html). All copy adapted from the BRD.
+# ════════════════════════ Template system ════════════════════════
+# Hand-rolled, email-client-safe HTML. Rules followed throughout:
+#   - table-based layout only (Outlook / Gmail ignore flexbox & grid)
+#   - every style inlined (Gmail strips <style> blocks in <head>)
+#   - one 600px-wide centred card, web-safe font stack, light theme
+# Brand palette is lifted straight from the app's logo glyph.
 
-def _wrap(body: str) -> str:
-    return f"""<!doctype html><html><body style="font-family:system-ui,Arial,sans-serif;color:#1a1a1a;max-width:560px;margin:auto;padding:24px;line-height:1.6">{body}<hr style="margin:32px 0;border:none;border-top:1px solid #e5e7eb"><p style="font-size:12px;color:#6b7280">Jaratrade Ltd</p></body></html>"""
+_NAVY = "#0b1a3f"      # brand navy - header / wordmark backdrop
+_COBALT = "#1d4ed8"    # brand cobalt - buttons, links, accents
+_SKY = "#60a5fa"       # brand sky - wordmark highlight
+_AMBER = "#fb923c"     # accent amber - "next steps" notes
+_INK = "#0f172a"       # near-black body text
+_BODY = "#374151"      # default paragraph grey
+_MUTED = "#6b7280"     # secondary / labels
+_FAINT = "#9ca3af"     # footer fine print
+_LINE = "#e5e7eb"      # hairline borders
+_PAGE = "#eef1f5"      # page background behind the card
+_TINT = "#f4f6fb"      # cobalt-tinted panel fill
+_FONT = "-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif"
 
+_SITE = (getattr(settings, "site_url", "") or "https://jaratrade.com").rstrip("/")
+_SYMBOL = {"NGN": "&#8358;", "GBP": "&#163;", "USD": "$"}
+
+
+def _money(amount, currency: str = "NGN") -> str:
+    """Format a monetary amount with the right currency symbol."""
+    try:
+        n = float(amount)
+    except (TypeError, ValueError):
+        return str(amount)
+    sym = _SYMBOL.get((currency or "").upper())
+    return f"{sym}{n:,.2f}" if sym else f"{n:,.2f} {currency}".strip()
+
+
+# ───────────────────────── Layout shell ─────────────────────────
+
+def _header() -> str:
+    return f"""<tr><td style="background:{_NAVY};padding:24px 40px;">
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0"><tr>
+<td style="font-family:{_FONT};font-size:23px;font-weight:800;letter-spacing:-0.5px;color:#ffffff;">Jara<span style="color:{_SKY};">trade</span></td>
+<td align="right" style="font-family:{_FONT};font-size:10px;font-weight:700;letter-spacing:1.6px;text-transform:uppercase;color:#8ea3cc;">Nigeria &#8594; UK Trade</td>
+</tr></table></td></tr>
+<tr><td style="height:3px;background:{_COBALT};line-height:3px;font-size:0;">&nbsp;</td></tr>"""
+
+
+def _footer() -> str:
+    return f"""<tr><td style="padding:26px 40px 32px 40px;font-family:{_FONT};border-top:1px solid {_LINE};background:#fbfbfc;">
+<p style="margin:0 0 6px 0;font-size:13px;font-weight:700;color:{_INK};">Jaratrade</p>
+<p style="margin:0 0 14px 0;font-size:12px;line-height:1.6;color:{_MUTED};">The B2B marketplace connecting Nigerian exporters with UK importers &mdash; with funds held securely until goods are received.</p>
+<p style="margin:0;font-size:11px;line-height:1.7;color:{_FAINT};">You're receiving this transactional email because of activity on your Jaratrade account.<br>
+&copy; Jaratrade Ltd &nbsp;&middot;&nbsp; <a href="{_SITE}" style="color:{_MUTED};text-decoration:underline;">jaratrade.com</a> &nbsp;&middot;&nbsp; <a href="{_SITE}/contact" style="color:{_MUTED};text-decoration:underline;">Contact support</a></p>
+</td></tr>"""
+
+
+def _layout(content: str, *, preheader: str = "") -> str:
+    """Wrap rendered content in the full branded email shell."""
+    pre = ""
+    if preheader:
+        pre = (f'<div style="display:none;max-height:0;overflow:hidden;opacity:0;'
+               f'mso-hide:all;">{preheader}{"&#8203;&nbsp;" * 40}</div>')
+    return f"""<!doctype html>
+<html lang="en"><head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="x-apple-disable-message-reformatting">
+<meta name="color-scheme" content="light">
+<title>Jaratrade</title>
+</head>
+<body style="margin:0;padding:0;background:{_PAGE};-webkit-text-size-adjust:100%;">
+{pre}
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="background:{_PAGE};">
+<tr><td align="center" style="padding:28px 12px;">
+<table role="presentation" width="600" cellpadding="0" cellspacing="0" border="0" style="width:100%;max-width:600px;background:#ffffff;border-radius:14px;overflow:hidden;border:1px solid {_LINE};">
+{_header()}
+<tr><td style="padding:38px 40px 26px 40px;font-family:{_FONT};">
+{content}
+</td></tr>
+{_footer()}
+</table>
+</td></tr>
+</table>
+</body></html>"""
+
+
+# ───────────────────────── Building blocks ─────────────────────────
+
+def _eyebrow(text: str) -> str:
+    return f'<p style="margin:0 0 8px 0;font-size:15px;color:{_BODY};font-family:{_FONT};">{text}</p>'
+
+
+def _h1(text: str) -> str:
+    return (f'<h1 style="margin:0 0 14px 0;font-size:26px;line-height:1.25;'
+            f'font-weight:800;letter-spacing:-0.5px;color:{_INK};font-family:{_FONT};">{text}</h1>')
+
+
+def _p(text: str, *, muted: bool = False, size: int = 15) -> str:
+    color = _MUTED if muted else _BODY
+    return (f'<p style="margin:0 0 16px 0;font-size:{size}px;line-height:1.65;'
+            f'color:{color};font-family:{_FONT};">{text}</p>')
+
+
+def _button(label: str, href: str) -> str:
+    return f"""<table role="presentation" cellpadding="0" cellspacing="0" border="0" style="margin:6px 0 24px 0;"><tr>
+<td style="border-radius:9px;background:{_COBALT};">
+<a href="{href}" style="display:inline-block;padding:13px 30px;font-family:{_FONT};font-size:15px;font-weight:700;color:#ffffff;text-decoration:none;border-radius:9px;">{label}</a>
+</td></tr></table>"""
+
+
+def _panel(label: str, value: str, *, sub: str = "") -> str:
+    """Highlight card: small uppercase label, big value, optional sub-line."""
+    sub_html = (f'<p style="margin:8px 0 0 0;font-size:13px;color:{_MUTED};'
+                f'font-family:{_FONT};">{sub}</p>') if sub else ""
+    return f"""<table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="margin:6px 0 24px 0;">
+<tr><td style="background:{_TINT};border:1px solid #e3e8f3;border-radius:12px;padding:20px 22px;">
+<p style="margin:0;font-size:11px;font-weight:700;letter-spacing:1.2px;text-transform:uppercase;color:{_COBALT};font-family:{_FONT};">{label}</p>
+<p style="margin:6px 0 0 0;font-size:24px;font-weight:800;letter-spacing:-0.3px;color:{_INK};font-family:{_FONT};">{value}</p>
+{sub_html}</td></tr></table>"""
+
+
+def _kv(label: str, value: str) -> str:
+    """A stacked label / value line inside a detail column."""
+    return (f'<p style="margin:0 0 13px 0;font-family:{_FONT};">'
+            f'<span style="display:block;font-size:11px;color:{_MUTED};text-transform:uppercase;letter-spacing:0.5px;">{label}</span>'
+            f'<span style="display:block;font-size:14px;color:{_INK};font-weight:600;margin-top:3px;">{value}</span></p>')
+
+
+def _detail_columns(left_title: str, left_html: str, right_title: str, right_html: str) -> str:
+    """Two side-by-side detail blocks (Delivery details / Order details)."""
+    def head(t: str) -> str:
+        return (f'<p style="margin:0 0 12px 0;font-size:12px;font-weight:700;letter-spacing:0.8px;'
+                f'text-transform:uppercase;color:{_INK};font-family:{_FONT};'
+                f'border-bottom:2px solid {_LINE};padding-bottom:8px;">{t}</p>')
+    return f"""<table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="margin:10px 0 22px 0;">
+<tr>
+<td valign="top" width="50%" style="padding-right:14px;">{head(left_title)}{left_html}</td>
+<td valign="top" width="50%" style="padding-left:14px;">{head(right_title)}{right_html}</td>
+</tr></table>"""
+
+
+def _section_title(text: str) -> str:
+    return (f'<p style="margin:24px 0 4px 0;font-size:12px;font-weight:700;letter-spacing:0.8px;'
+            f'text-transform:uppercase;color:{_INK};font-family:{_FONT};'
+            f'border-bottom:2px solid {_LINE};padding-bottom:8px;">{text}</p>')
+
+
+def _line_items(items: list, currency: str) -> str:
+    rows = ""
+    for it in items:
+        name = it.get("name", "Item")
+        qty = it.get("quantity", 1)
+        unit = it.get("unit_price", 0)
+        sub = it.get("subtotal", 0)
+        rows += f"""<tr>
+<td style="padding:14px 0;border-top:1px solid {_LINE};font-family:{_FONT};">
+<span style="font-size:14px;font-weight:700;color:{_INK};">{name}</span><br>
+<span style="font-size:12px;color:{_MUTED};">Qty {qty} &times; {_money(unit, currency)}</span></td>
+<td align="right" valign="top" style="padding:14px 0;border-top:1px solid {_LINE};font-family:{_FONT};font-size:14px;font-weight:700;color:{_INK};white-space:nowrap;">{_money(sub, currency)}</td>
+</tr>"""
+    return (f'<table role="presentation" width="100%" cellpadding="0" cellspacing="0" '
+            f'border="0" style="margin-bottom:4px;">{rows}</table>')
+
+
+def _totals(rows: list, currency: str) -> str:
+    """rows: list of (label, amount, is_grand_total)."""
+    out = ""
+    for label, amount, grand in rows:
+        if grand:
+            out += (f'<tr><td style="padding:14px 0 0 0;border-top:2px solid {_INK};font-family:{_FONT};'
+                    f'font-size:15px;font-weight:800;color:{_INK};">{label}</td>'
+                    f'<td align="right" style="padding:14px 0 0 0;border-top:2px solid {_INK};font-family:{_FONT};'
+                    f'font-size:18px;font-weight:800;color:{_INK};">{_money(amount, currency)}</td></tr>')
+        else:
+            out += (f'<tr><td style="padding:6px 0;font-family:{_FONT};font-size:13px;color:{_MUTED};">{label}</td>'
+                    f'<td align="right" style="padding:6px 0;font-family:{_FONT};font-size:13px;color:{_INK};">'
+                    f'{_money(amount, currency)}</td></tr>')
+    return (f'<table role="presentation" width="100%" cellpadding="0" cellspacing="0" '
+            f'border="0" style="margin:8px 0 22px 0;">{out}</table>')
+
+
+def _note(text: str) -> str:
+    """Soft amber-flagged box for 'what happens next' style guidance."""
+    return f"""<table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="margin:8px 0 14px 0;">
+<tr><td style="background:#fdfaf5;border:1px solid #f3e6d2;border-left:3px solid {_AMBER};border-radius:8px;padding:14px 16px;font-family:{_FONT};font-size:13px;line-height:1.65;color:#7a6034;">{text}</td></tr></table>"""
+
+
+def _info_rows(pairs: list) -> str:
+    """A simple stacked key/value list (single column)."""
+    return "".join(_kv(k, v) for k, v in pairs)
+
+
+def _delivery_html(delivery: Optional[dict]) -> str:
+    """Render a delivery address from whatever shape checkout stored."""
+    delivery = delivery or {}
+    name = delivery.get("name") or delivery.get("recipient") or delivery.get("full_name") or ""
+    order_keys = [
+        ("address", "address_line1", "line1", "street"),
+        ("address_line2", "line2", "apartment"),
+        ("city", "town"),
+        ("state", "region", "county"),
+        ("postcode", "postal_code", "zip", "zipcode"),
+        ("country",),
+    ]
+    parts: list = []
+    for group in order_keys:
+        for k in group:
+            v = delivery.get(k)
+            if v:
+                parts.append(str(v))
+                break
+    if not parts:
+        # Fallback: render any plain scalar values we can find.
+        for k, v in delivery.items():
+            if k != "raw" and isinstance(v, (str, int, float)) and str(v).strip():
+                parts.append(str(v))
+    lines = ([f'<strong style="color:{_INK};">{name}</strong>'] if name else []) + parts
+    if not lines:
+        return f'<p style="margin:0;font-size:13px;color:{_MUTED};font-family:{_FONT};">As provided at checkout.</p>'
+    return (f'<p style="margin:0;font-size:13px;line-height:1.75;color:{_BODY};'
+            f'font-family:{_FONT};">' + "<br>".join(lines) + "</p>")
+
+
+# ════════════════════════ Templates ════════════════════════
+# Each function returns (subject, html). Copy adapted from the BRD.
 
 def t_welcome_verify(name: str, verify_link: str, code: str = "") -> tuple[str, str]:
-    """Verification email. Renders both a click-to-verify button (link) and
-    the raw code, because the /auth/verify-email page offers a paste-the-code
-    fallback for cross-device flows (e.g. read email on phone, verify on
-    desktop). Without showing the code, that fallback was a dead UI promise.
-    """
-    subject = "Welcome to Jaratrade! Please verify your email"
-    code_block = f"""
-    <p style="margin-top:18px;font-size:14px;color:#374151">Or if the button doesn't work, paste this code into the verification page:</p>
-    <p style="font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:13px;background:#f3f4f6;padding:10px 14px;border-radius:6px;border:1px solid #e5e7eb;word-break:break-all;display:inline-block">{code}</p>""" if code else ""
-    body = f"""<p>Hello {name or 'there'},</p>
-    <p>Thank you for registering with Jaratrade! To complete your registration, please verify your email by clicking the link below:</p>
-    <p><a href="{verify_link}" style="display:inline-block;background:#2563eb;color:white;padding:10px 18px;border-radius:6px;text-decoration:none">Verify my email</a></p>
-    {code_block}
-    <p>If you didn't sign up, you can safely ignore this message.</p>
-    <p>Best regards,<br>The Jaratrade Team</p>"""
-    return subject, _wrap(body)
+    """Verification email. Renders both a click-to-verify button and the raw
+    code, because the verify-email page offers a paste-the-code fallback for
+    cross-device flows (read email on phone, verify on desktop)."""
+    subject = "Verify your email to get started on Jaratrade"
+    code_block = ""
+    if code:
+        code_block = (
+            _p("Or paste this code into the verification page if the button doesn't work:", muted=True, size=13)
+            + f'<p style="margin:0 0 18px 0;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;'
+              f'font-size:18px;font-weight:700;letter-spacing:3px;background:{_TINT};color:{_INK};'
+              f'padding:14px 18px;border-radius:8px;border:1px solid #e3e8f3;display:inline-block;">{code}</p>'
+        )
+    content = (
+        _eyebrow(f"Hi {name or 'there'},")
+        + _h1("Welcome to Jaratrade.")
+        + _p("You're one click away. Confirm your email address to activate your account and start trading.")
+        + _button("Verify my email", verify_link)
+        + code_block
+        + _p("If you didn't create a Jaratrade account, you can safely ignore this email.", muted=True, size=13)
+    )
+    return subject, _layout(content, preheader="Confirm your email to activate your Jaratrade account.")
 
 
 def t_account_under_review(name: str) -> tuple[str, str]:
     subject = "Your Jaratrade account is under review"
-    body = f"""<p>Hello {name or 'there'},</p>
-    <p>Thank you for registering your business with Jaratrade. Your account is currently under review for verification. We'll notify you once it's been activated.</p>
-    <p>This usually takes 1-2 business days.</p>
-    <p>Best regards,<br>The Jaratrade Team</p>"""
-    return subject, _wrap(body)
+    content = (
+        _eyebrow(f"Hi {name or 'there'},")
+        + _h1("Your account is under review.")
+        + _p("Thanks for registering your business with Jaratrade. Our team is verifying your details &mdash; this usually takes 1&ndash;2 business days.")
+        + _panel("Status", "Under review", sub="We'll email you the moment it's activated.")
+        + _p("Nothing more is needed from you right now. Hang tight.", muted=True)
+    )
+    return subject, _layout(content, preheader="Your Jaratrade account is being verified.")
 
 
 def t_new_exporter_pending_review_admin(
@@ -265,222 +490,381 @@ def t_new_exporter_pending_review_admin(
 ) -> tuple[str, str]:
     """Admin-side alert for a fresh exporter signup that needs KYC review."""
     subject = f"New exporter pending KYC review: {business_name or contact_name or 'unknown'}"
-    body = f"""<p>A new exporter just signed up and is awaiting KYC review.</p>
-    <table style="border-collapse:collapse;margin-top:8px">
-      <tr><td style="padding:6px 12px;border:1px solid #e5e7eb">Business</td><td style="padding:6px 12px;border:1px solid #e5e7eb">{business_name or '(not yet provided)'}</td></tr>
-      <tr><td style="padding:6px 12px;border:1px solid #e5e7eb">Business email</td><td style="padding:6px 12px;border:1px solid #e5e7eb">{business_email or '(not yet provided)'}</td></tr>
-      <tr><td style="padding:6px 12px;border:1px solid #e5e7eb">Contact</td><td style="padding:6px 12px;border:1px solid #e5e7eb">{contact_name or '(not provided)'}</td></tr>
-      <tr><td style="padding:6px 12px;border:1px solid #e5e7eb">Contact email</td><td style="padding:6px 12px;border:1px solid #e5e7eb">{contact_email or '(not provided)'}</td></tr>
-    </table>
-    <p style="margin-top:18px"><a href="{review_link}" style="display:inline-block;background:#2563eb;color:white;padding:10px 18px;border-radius:6px;text-decoration:none">Open KYC queue</a></p>
-    <p>If the exporter hasn't completed their business profile yet, the KYC review screen will show them as pending. Their docs land as they fill them in.</p>"""
-    return subject, _wrap(body)
+    rows = _info_rows([
+        ("Business", business_name or "(not yet provided)"),
+        ("Business email", business_email or "(not yet provided)"),
+        ("Contact", contact_name or "(not provided)"),
+        ("Contact email", contact_email or "(not provided)"),
+    ])
+    content = (
+        _h1("New exporter awaiting review.")
+        + _p("A new exporter just signed up and is queued for KYC review.")
+        + f'<table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="margin:6px 0 18px 0;"><tr><td style="background:{_TINT};border:1px solid #e3e8f3;border-radius:12px;padding:18px 22px;">{rows}</td></tr></table>'
+        + _button("Open KYC queue", review_link)
+        + _p("If the exporter hasn't finished their business profile yet, they'll show as pending &mdash; their documents land as they fill them in.", muted=True, size=13)
+    )
+    return subject, _layout(content, preheader="An exporter is waiting for KYC review.")
 
 
 def t_account_activated(name: str, login_link: str) -> tuple[str, str]:
-    subject = "Your Jaratrade account is now active!"
-    body = f"""<p>Hello {name or 'there'},</p>
-    <p>Congratulations! Your Jaratrade account has been successfully activated. You can now start trading.</p>
-    <p><a href="{login_link}" style="display:inline-block;background:#2563eb;color:white;padding:10px 18px;border-radius:6px;text-decoration:none">Log in</a></p>
-    <p>Best regards,<br>The Jaratrade Team</p>"""
-    return subject, _wrap(body)
+    subject = "Your Jaratrade account is now active"
+    content = (
+        _eyebrow(f"Hi {name or 'there'},")
+        + _h1("You're verified &mdash; welcome aboard.")
+        + _p("Your Jaratrade account has been approved and is now fully active. You can log in and start trading right away.")
+        + _button("Log in to Jaratrade", login_link)
+        + _note("<strong>Tip:</strong> complete your storefront and product listings to start appearing in buyer searches.")
+    )
+    return subject, _layout(content, preheader="Your Jaratrade account has been approved.")
 
 
 def t_account_rejected(name: str, reason: str) -> tuple[str, str]:
     subject = "An update on your Jaratrade application"
-    body = f"""<p>Hello {name or 'there'},</p>
-    <p>Thank you for applying to Jaratrade. Unfortunately we weren't able to approve your account at this time:</p>
-    <blockquote style="border-left:3px solid #d1d5db;padding-left:12px;color:#4b5563">{reason}</blockquote>
-    <p>You can update your details and re-apply, or reach out to support if you'd like to discuss.</p>
-    <p>Best regards,<br>The Jaratrade Team</p>"""
-    return subject, _wrap(body)
+    content = (
+        _eyebrow(f"Hi {name or 'there'},")
+        + _h1("An update on your application.")
+        + _p("Thanks for applying to Jaratrade. We weren't able to approve your account at this time:")
+        + f'<table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="margin:0 0 18px 0;"><tr><td style="background:#fdf2f2;border:1px solid #f4d4d4;border-left:3px solid #dc2626;border-radius:8px;padding:14px 16px;font-family:{_FONT};font-size:14px;line-height:1.6;color:#7f1d1d;">{reason}</td></tr></table>'
+        + _p("You're welcome to update your details and re-apply, or reach out to support if you'd like to talk it through.")
+        + _button("Contact support", f"{_SITE}/contact")
+    )
+    return subject, _layout(content, preheader="An update on your Jaratrade application.")
 
 
 def t_password_reset(name: str, reset_link: str) -> tuple[str, str]:
     subject = "Reset your Jaratrade password"
-    body = f"""<p>Hello {name or 'there'},</p>
-    <p>You requested to reset your password. Click the link below to choose a new one:</p>
-    <p><a href="{reset_link}" style="display:inline-block;background:#2563eb;color:white;padding:10px 18px;border-radius:6px;text-decoration:none">Reset password</a></p>
-    <p>This link expires in 30 minutes. If you didn't request this, ignore this email.</p>"""
-    return subject, _wrap(body)
+    content = (
+        _eyebrow(f"Hi {name or 'there'},")
+        + _h1("Reset your password.")
+        + _p("We received a request to reset your Jaratrade password. Choose a new one with the button below.")
+        + _button("Reset my password", reset_link)
+        + _p("This link expires in 30 minutes. If you didn't request a reset, you can safely ignore this email &mdash; your password won't change.", muted=True, size=13)
+    )
+    return subject, _layout(content, preheader="Reset your Jaratrade password (link expires in 30 minutes).")
 
 
-def t_order_placed_buyer(name: str, order_no: str, total: str, link: str) -> tuple[str, str]:
-    subject = f"Order confirmation - {order_no}"
-    body = f"""<p>Hello {name or 'there'},</p>
-    <p>Thank you for your order! Here are the details:</p>
-    <p><strong>Order number:</strong> {order_no}<br>
-    <strong>Total:</strong> {total}</p>
-    <p><a href="{link}">Track your order</a></p>
-    <p>Next steps: we'll notify the exporter to confirm and prepare your shipment.</p>"""
-    return subject, _wrap(body)
+def t_order_placed_buyer(
+    name: str,
+    order_no: str,
+    link: str,
+    *,
+    currency: str = "NGN",
+    items: Optional[list] = None,
+    subtotal: float = 0.0,
+    logistics_fee: float = 0.0,
+    platform_fee: float = 0.0,
+    total: float = 0.0,
+    delivery: Optional[dict] = None,
+    order_date: str = "",
+    shipping_mode: str = "",
+) -> tuple[str, str]:
+    """Rich buyer order confirmation: hero, order panel, delivery + order
+    detail columns, line items and a full cost breakdown."""
+    subject = f"Order confirmed - {order_no}"
+    items = items or []
+    ship_label = {"logistics": "Jaratrade logistics", "self": "Seller-arranged"}.get(
+        (shipping_mode or "").lower(), (shipping_mode or "Logistics").title()
+    )
+    totals = [("Subtotal", subtotal, False)]
+    if logistics_fee:
+        totals.append(("Logistics", logistics_fee, False))
+    totals.append(("Platform fee", platform_fee, False))
+    totals.append(("Order total", total, True))
+    order_details = _info_rows([
+        ("Order date", order_date or "&mdash;"),
+        ("Shipping", ship_label),
+        ("Payment", "Awaiting payment"),
+    ])
+    content = (
+        _eyebrow(f"Hi {name or 'there'},")
+        + _h1("Thank you for your order.")
+        + _p("It's confirmed. We've shared it with the seller &mdash; you'll get an email the moment it ships.", muted=True)
+        + _panel("Order number", order_no, sub=(f"Placed {order_date}" if order_date else ""))
+        + _button("Track your order", link)
+        + _detail_columns("Delivery details", _delivery_html(delivery), "Order details", order_details)
+        + ((_section_title("Items") + _line_items(items, currency)) if items else "")
+        + _totals(totals, currency)
+        + _note("<strong>What happens next:</strong> the seller confirms and prepares your shipment. Your funds are held securely by Jaratrade and only released once you confirm the goods have arrived.")
+    )
+    return subject, _layout(content, preheader=f"Your order {order_no} is confirmed.")
 
 
-def t_order_received_seller(name: str, order_no: str, importer_name: str, total: str, link: str) -> tuple[str, str]:
+def t_order_received_seller(
+    name: str,
+    order_no: str,
+    importer_name: str,
+    link: str,
+    *,
+    currency: str = "NGN",
+    items: Optional[list] = None,
+    subtotal: float = 0.0,
+    logistics_fee: float = 0.0,
+    platform_fee: float = 0.0,
+    total: float = 0.0,
+    order_date: str = "",
+) -> tuple[str, str]:
+    """Rich seller new-order notification."""
     subject = f"New order received - {order_no}"
-    body = f"""<p>Hello {name or 'there'},</p>
-    <p>You've received a new order from <strong>{importer_name}</strong>.</p>
-    <p><strong>Order number:</strong> {order_no}<br>
-    <strong>Total:</strong> {total}</p>
-    <p><a href="{link}">View order</a></p>
-    <p>Please confirm and prepare for shipment.</p>"""
-    return subject, _wrap(body)
+    items = items or []
+    totals = [("Subtotal", subtotal, False)]
+    if logistics_fee:
+        totals.append(("Logistics", logistics_fee, False))
+    totals.append(("Platform fee", platform_fee, False))
+    totals.append(("Order total", total, True))
+    content = (
+        _eyebrow(f"Hi {name or 'there'},")
+        + _h1("You've got a new order.")
+        + _p(f"<strong>{importer_name}</strong> just placed an order with you. Confirm it and start preparing the shipment.", muted=True)
+        + _panel("Order number", order_no, sub=(f"Received {order_date}" if order_date else ""))
+        + _button("View &amp; confirm order", link)
+        + ((_section_title("Items") + _line_items(items, currency)) if items else "")
+        + _totals(totals, currency)
+        + _note("<strong>Reminder:</strong> ship promptly and mark the order as shipped. Your payout is released once the buyer confirms delivery, or 7 days after the order is delivered.")
+    )
+    return subject, _layout(content, preheader=f"{importer_name} placed order {order_no}.")
 
 
 def t_order_status_update(name: str, order_no: str, status: str, extra: str = "") -> tuple[str, str]:
-    nice = {
-        "paid": "Your payment has been confirmed.",
-        "shipped": "Your order has been shipped.",
-        "delivered": "Your order has been delivered.",
-        "cancelled": "Your order has been cancelled.",
+    headline = {
+        "paid": "Payment confirmed",
+        "confirmed": "Your order is confirmed",
+        "preparing": "Your order is being prepared",
+        "shipped": "Your order has shipped",
+        "delivered": "Your order was delivered",
+        "cancelled": "Your order was cancelled",
+        "refunded": "Your order was refunded",
+    }.get(status, "Order update")
+    blurb = {
+        "paid": "We've confirmed your payment. The seller has been notified to prepare your shipment.",
+        "confirmed": "The seller has confirmed your order and will begin preparing it.",
+        "preparing": "The seller is preparing your order for shipment.",
+        "shipped": "Good news &mdash; your order is on its way.",
+        "delivered": "Your order has been delivered. Please confirm receipt so the seller can be paid.",
+        "cancelled": "Your order has been cancelled. Any payment made will be returned.",
+        "refunded": "A refund has been issued to your original payment method.",
     }.get(status, f"Your order status changed to {status}.")
     subject = f"Order {order_no} - {status}"
-    body = f"""<p>Hello {name or 'there'},</p>
-    <p>{nice}</p>
-    {f'<p>{extra}</p>' if extra else ''}
-    <p><strong>Order number:</strong> {order_no}</p>"""
-    return subject, _wrap(body)
+    content = (
+        _eyebrow(f"Hi {name or 'there'},")
+        + _h1(headline)
+        + _p(blurb, muted=True)
+        + _panel("Order number", order_no, sub=f"Status: {status.title()}")
+        + (_p(extra) if extra else "")
+        + _button("View your order", f"{_SITE}/importer/orders")
+    )
+    return subject, _layout(content, preheader=blurb)
 
 
 def t_payment_invoice(name: str, order_no: str, total: str, paid_on: str) -> tuple[str, str]:
     subject = f"Payment receipt - {order_no}"
-    body = f"""<p>Hello {name or 'there'},</p>
-    <p>Thank you for your payment. Here is your receipt:</p>
-    <table style="border-collapse:collapse;margin-top:8px">
-      <tr><td style="padding:6px 12px;border:1px solid #e5e7eb">Order</td><td style="padding:6px 12px;border:1px solid #e5e7eb">{order_no}</td></tr>
-      <tr><td style="padding:6px 12px;border:1px solid #e5e7eb">Total</td><td style="padding:6px 12px;border:1px solid #e5e7eb">{total}</td></tr>
-      <tr><td style="padding:6px 12px;border:1px solid #e5e7eb">Paid on</td><td style="padding:6px 12px;border:1px solid #e5e7eb">{paid_on}</td></tr>
-    </table>"""
-    return subject, _wrap(body)
+    content = (
+        _eyebrow(f"Hi {name or 'there'},")
+        + _h1("Payment received.")
+        + _p("Thank you &mdash; your payment has cleared. Here's your receipt.", muted=True)
+        + _panel("Amount paid", str(total), sub=f"Order {order_no}")
+        + _detail_columns(
+            "Receipt",
+            _info_rows([("Order number", order_no), ("Paid on", paid_on or "&mdash;")]),
+            "Payment",
+            _info_rows([("Method", "Card / bank transfer"), ("Status", "Successful")]),
+        )
+        + _note("Keep this email as proof of payment. The seller has been notified to prepare your shipment, and your funds are held securely until you confirm delivery.")
+    )
+    return subject, _layout(content, preheader=f"Receipt for order {order_no}.")
 
 
 def t_transaction_limit_warning(name: str, percent_used: int, plan_name: str) -> tuple[str, str]:
-    subject = "You're approaching your free-plan limit"
-    body = f"""<p>Hello {name or 'there'},</p>
-    <p>You've used <strong>{percent_used}%</strong> of your {plan_name} monthly transaction limit.</p>
-    <p>Consider upgrading to Premium for unlimited transactions and priority support.</p>"""
-    return subject, _wrap(body)
+    subject = "You're approaching your plan limit"
+    content = (
+        _eyebrow(f"Hi {name or 'there'},")
+        + _h1("You're approaching your plan limit.")
+        + _panel("Monthly limit used", f"{percent_used}%", sub=f"On your {plan_name} plan")
+        + _p("Upgrade to Premium for unlimited transactions, lower fees and priority support &mdash; so a busy month never slows you down.")
+        + _button("View upgrade options", f"{_SITE}/pricing")
+    )
+    return subject, _layout(content, preheader=f"You've used {percent_used}% of your {plan_name} limit.")
 
 
 def t_review_prompt(name: str, exporter_name: str, link: str) -> tuple[str, str]:
-    subject = "Tell us about your experience"
-    body = f"""<p>Hello {name or 'there'},</p>
-    <p>We hope your recent order from {exporter_name} met your expectations. Could you take a moment to leave a rating and review?</p>
-    <p><a href="{link}" style="display:inline-block;background:#2563eb;color:white;padding:10px 18px;border-radius:6px;text-decoration:none">Leave a review</a></p>"""
-    return subject, _wrap(body)
+    subject = "How was your recent order?"
+    content = (
+        _eyebrow(f"Hi {name or 'there'},")
+        + _h1("How did we do?")
+        + _p(f"We hope your recent order from <strong>{exporter_name}</strong> met your expectations. A quick rating helps other importers buy with confidence.")
+        + _button("Leave a review", link)
+        + _p("It takes less than a minute.", muted=True, size=13)
+    )
+    return subject, _layout(content, preheader=f"Rate your order from {exporter_name}.")
 
 
 def t_review_received(name: str, link: str) -> tuple[str, str]:
     subject = "You've received new feedback"
-    body = f"""<p>Hello {name or 'there'},</p>
-    <p>You've received new feedback on a recent order. <a href="{link}">View it here</a>.</p>"""
-    return subject, _wrap(body)
+    content = (
+        _eyebrow(f"Hi {name or 'there'},")
+        + _h1("You've received new feedback.")
+        + _p("A buyer just left a rating and review on one of your recent orders.")
+        + _button("View your feedback", link)
+    )
+    return subject, _layout(content, preheader="A buyer left you a new review.")
 
 
 def t_account_updated(name: str, what: str) -> tuple[str, str]:
     subject = "Your Jaratrade account was updated"
-    body = f"""<p>Hello {name or 'there'},</p>
-    <p>For your security, we're letting you know your <strong>{what}</strong> was updated.</p>
-    <p>If this wasn't you, please contact support immediately.</p>"""
-    return subject, _wrap(body)
+    content = (
+        _eyebrow(f"Hi {name or 'there'},")
+        + _h1("A change to your account.")
+        + _p(f"For your security, we're letting you know your <strong>{what}</strong> was just updated.")
+        + _note("<strong>Didn't make this change?</strong> Contact support immediately so we can secure your account.")
+        + _button("Contact support", f"{_SITE}/contact")
+    )
+    return subject, _layout(content, preheader=f"Your {what} was updated.")
 
 
 def t_2fa_enabled(name: str) -> tuple[str, str]:
     subject = "Two-factor authentication enabled"
-    body = f"""<p>Hello {name or 'there'},</p>
-    <p>Two-factor authentication has been enabled on your Jaratrade account. From now on, you'll need a code from your authenticator app to log in.</p>
-    <p>If you didn't enable this, contact support immediately.</p>"""
-    return subject, _wrap(body)
+    content = (
+        _eyebrow(f"Hi {name or 'there'},")
+        + _h1("Two-factor authentication is on.")
+        + _p("Your Jaratrade account is now protected with two-factor authentication. You'll enter a code from your authenticator app each time you log in.")
+        + _note("<strong>Didn't enable this?</strong> Contact support immediately &mdash; someone may have access to your account.")
+    )
+    return subject, _layout(content, preheader="2FA is now active on your Jaratrade account.")
 
 
 def t_subscription_payment_confirmed(name: str, plan_title: str, amount: str, period_end: str) -> tuple[str, str]:
     subject = "Subscription payment confirmed"
-    body = f"""<p>Hello {name or 'there'},</p>
-    <p>Your subscription payment of <strong>{amount}</strong> for the <strong>{plan_title}</strong> plan has been processed.</p>
-    <p>You're all set until <strong>{period_end}</strong>.</p>"""
-    return subject, _wrap(body)
+    content = (
+        _eyebrow(f"Hi {name or 'there'},")
+        + _h1("Your subscription is active.")
+        + _p(f"We've processed your payment for the <strong>{plan_title}</strong> plan. Thank you.")
+        + _detail_columns(
+            "Payment",
+            _info_rows([("Plan", plan_title), ("Amount", str(amount))]),
+            "Coverage",
+            _info_rows([("Status", "Active"), ("Renews / ends", period_end)]),
+        )
+    )
+    return subject, _layout(content, preheader=f"Your {plan_title} subscription is active.")
 
 
 def t_subscription_renewal_reminder(name: str, plan_title: str, period_end: str) -> tuple[str, str]:
     subject = "Subscription renewal reminder"
-    body = f"""<p>Hello {name or 'there'},</p>
-    <p>Just a reminder, your <strong>{plan_title}</strong> plan renews on <strong>{period_end}</strong>.</p>
-    <p>If your payment method needs an update, please log in and refresh it.</p>"""
-    return subject, _wrap(body)
+    content = (
+        _eyebrow(f"Hi {name or 'there'},")
+        + _h1("Your plan renews soon.")
+        + _panel("Renews on", period_end, sub=f"{plan_title} plan")
+        + _p("No action is needed if your payment method is up to date. To update your card, log in and visit your subscription settings.")
+        + _button("Manage subscription", f"{_SITE}/settings/subscription")
+    )
+    return subject, _layout(content, preheader=f"Your {plan_title} plan renews on {period_end}.")
 
 
 def t_subscription_cancelled(name: str, plan_title: str, period_end: str) -> tuple[str, str]:
     subject = "Subscription cancelled"
-    body = f"""<p>Hello {name or 'there'},</p>
-    <p>You've cancelled your <strong>{plan_title}</strong> auto-renewal. You'll keep premium access until <strong>{period_end}</strong>, after which your account will move to the free plan.</p>
-    <p>You can reactivate at any time from your subscription settings.</p>"""
-    return subject, _wrap(body)
+    content = (
+        _eyebrow(f"Hi {name or 'there'},")
+        + _h1("Your auto-renewal is off.")
+        + _p(f"You've cancelled auto-renewal for the <strong>{plan_title}</strong> plan. You'll keep full premium access until the date below, then move to the free plan.")
+        + _panel("Premium access until", period_end)
+        + _p("Changed your mind? You can reactivate any time from your subscription settings.", muted=True)
+        + _button("Reactivate plan", f"{_SITE}/settings/subscription")
+    )
+    return subject, _layout(content, preheader=f"Premium access continues until {period_end}.")
 
 
 def t_subscription_expired(name: str, plan_title: str) -> tuple[str, str]:
     subject = "Your premium plan has expired"
-    body = f"""<p>Hello {name or 'there'},</p>
-    <p>Your <strong>{plan_title}</strong> plan has expired and your account is now on the free tier.</p>
-    <p>You can upgrade again any time from your subscription settings.</p>"""
-    return subject, _wrap(body)
+    content = (
+        _eyebrow(f"Hi {name or 'there'},")
+        + _h1("Your premium plan has expired.")
+        + _p(f"Your <strong>{plan_title}</strong> plan has ended and your account is now on the free tier. Some premium features are no longer available.")
+        + _button("Upgrade again", f"{_SITE}/pricing")
+    )
+    return subject, _layout(content, preheader=f"Your {plan_title} plan has expired.")
 
 
 def t_subscription_renewed(name: str, plan_title: str, amount: str, period_end: str, last4: str) -> tuple[str, str]:
     subject = f"Subscription renewed - {plan_title}"
-    body = f"""<p>Hello {name or 'there'},</p>
-    <p>Your <strong>{plan_title}</strong> subscription was renewed for <strong>{amount}</strong>.</p>
-    <p>We charged the card ending in <strong>{last4 or 'on file'}</strong>. You're set until <strong>{period_end}</strong>.</p>"""
-    return subject, _wrap(body)
+    content = (
+        _eyebrow(f"Hi {name or 'there'},")
+        + _h1("Your subscription was renewed.")
+        + _p(f"We've renewed your <strong>{plan_title}</strong> plan. Thanks for staying with Jaratrade.")
+        + _detail_columns(
+            "Payment",
+            _info_rows([("Amount", str(amount)), ("Card", f"ending {last4}" if last4 else "on file")]),
+            "Coverage",
+            _info_rows([("Plan", plan_title), ("Renews on", period_end)]),
+        )
+    )
+    return subject, _layout(content, preheader=f"Your {plan_title} subscription renewed.")
 
 
 def t_subscription_renewal_failed(name: str, plan_title: str, attempts: int, manage_link: str) -> tuple[str, str]:
     subject = f"Action needed - couldn't renew your {plan_title} subscription"
-    body = f"""<p>Hello {name or 'there'},</p>
-    <p>We tried to renew your <strong>{plan_title}</strong> subscription but the charge failed (attempt {attempts}).</p>
-    <p>Update your payment method to keep premium access:</p>
-    <p><a href="{manage_link}" style="display:inline-block;background:#2563eb;color:white;padding:10px 18px;border-radius:6px;text-decoration:none">Update card</a></p>
-    <p>If we can't process the renewal after three attempts, your account will move to the free tier.</p>"""
-    return subject, _wrap(body)
+    content = (
+        _eyebrow(f"Hi {name or 'there'},")
+        + _h1("We couldn't renew your subscription.")
+        + _p(f"We tried to renew your <strong>{plan_title}</strong> plan but the charge didn't go through (attempt {attempts}).")
+        + _p("Update your payment method to keep your premium access &mdash; it only takes a moment.")
+        + _button("Update payment method", manage_link)
+        + _note("If we can't process the renewal after three attempts, your account will move to the free tier.")
+    )
+    return subject, _layout(content, preheader=f"Update your card to keep your {plan_title} plan.")
 
 
 def t_inventory_stale_reminder(name: str, count: int, manage_link: str) -> tuple[str, str]:
-    subject = "Confirm your stock - keep search ranking"
-    body = f"""<p>Hello {name or 'there'},</p>
-    <p>You have <strong>{count}</strong> product{'s' if count != 1 else ''} that haven't been updated in over a week.</p>
-    <p>Confirm stock (or update prices) to stay prioritised in search results:</p>
-    <p><a href="{manage_link}" style="display:inline-block;background:#2563eb;color:white;padding:10px 18px;border-radius:6px;text-decoration:none">Review products</a></p>"""
-    return subject, _wrap(body)
+    subject = "Confirm your stock to keep your search ranking"
+    plural = "s" if count != 1 else ""
+    content = (
+        _eyebrow(f"Hi {name or 'there'},")
+        + _h1("Time to refresh your listings.")
+        + _panel("Needs attention", f"{count} product{plural}", sub="Not updated in over a week")
+        + _p("Buyers prefer fresh listings, and so does search. Confirm stock or update prices to stay prioritised in results.")
+        + _button("Review my products", manage_link)
+    )
+    return subject, _layout(content, preheader=f"{count} product{plural} need a stock update.")
 
 
 def t_dispute_raised_buyer(name: str, order_no: str, reason: str) -> tuple[str, str]:
-    subject = f"Dispute received for order {order_no}"
-    body = f"""<p>Hello {name or 'there'},</p>
-    <p>We've received your dispute on order <strong>{order_no}</strong>.</p>
-    <p><strong>Reason:</strong> {reason}</p>
-    <p>Our support team will review within 24 hours and email you with next steps.</p>"""
-    return subject, _wrap(body)
+    subject = f"We've received your dispute - {order_no}"
+    content = (
+        _eyebrow(f"Hi {name or 'there'},")
+        + _h1("We've received your dispute.")
+        + _p(f"Your dispute on order <strong>{order_no}</strong> has been logged. Our team will review it and email you with next steps.")
+        + _panel("Dispute reason", str(reason).replace("_", " ").title(), sub=f"Order {order_no}")
+        + _note("Our support team typically reviews disputes within 24 hours. Your funds remain held securely while we look into it.")
+    )
+    return subject, _layout(content, preheader=f"Your dispute on order {order_no} has been logged.")
 
 
 def t_dispute_raised_seller(name: str, order_no: str, importer_name: str, reason: str) -> tuple[str, str]:
-    subject = f"Dispute filed on order {order_no}"
-    body = f"""<p>Hello {name or 'there'},</p>
-    <p>{importer_name} has raised a dispute on order <strong>{order_no}</strong>.</p>
-    <p><strong>Reason:</strong> {reason}</p>
-    <p>Our team is investigating and will be in touch if we need anything from you.</p>"""
-    return subject, _wrap(body)
+    subject = f"A dispute was filed on order {order_no}"
+    content = (
+        _eyebrow(f"Hi {name or 'there'},")
+        + _h1("A dispute was filed.")
+        + _p(f"<strong>{importer_name}</strong> has raised a dispute on order <strong>{order_no}</strong>. Our team is reviewing it.")
+        + _panel("Dispute reason", str(reason).replace("_", " ").title(), sub=f"Order {order_no}")
+        + _note("There's nothing you need to do right now &mdash; we'll be in touch if we need information from you. The order's payout is paused until the dispute is resolved.")
+    )
+    return subject, _layout(content, preheader=f"{importer_name} disputed order {order_no}.")
 
 
 def t_dispute_resolved_buyer(name: str, order_no: str, resolution: str, amount: str = "") -> tuple[str, str]:
-    nice = {
-        "refund": f"We've issued a refund of <strong>{amount}</strong> to your original payment method. It may take 3-7 business days to appear.",
-        "replacement": "A replacement shipment is being arranged. You'll receive tracking details once the exporter dispatches.",
-        "dismissed": "After review, we weren't able to grant a refund or replacement on this dispute.",
+    blurb = {
+        "refund": f"We've issued a refund of <strong>{amount}</strong> to your original payment method. It can take 3&ndash;7 business days to appear.",
+        "replacement": "A replacement shipment is being arranged. You'll receive tracking details once the seller dispatches it.",
+        "dismissed": "After reviewing the evidence, we weren't able to grant a refund or replacement for this dispute.",
     }.get(resolution, f"Resolution: {resolution}.")
-    subject = f"Dispute resolved for order {order_no}"
-    body = f"""<p>Hello {name or 'there'},</p>
-    <p>Your dispute on order <strong>{order_no}</strong> has been resolved.</p>
-    <p>{nice}</p>"""
-    return subject, _wrap(body)
+    subject = f"Your dispute has been resolved - {order_no}"
+    content = (
+        _eyebrow(f"Hi {name or 'there'},")
+        + _h1("Your dispute has been resolved.")
+        + _panel("Resolution", str(resolution).replace("_", " ").title(), sub=f"Order {order_no}")
+        + _p(blurb)
+        + _p("If you have any questions about this outcome, our support team is happy to help.", muted=True, size=13)
+        + _button("Contact support", f"{_SITE}/contact")
+    )
+    return subject, _layout(content, preheader=f"Your dispute on order {order_no} has been resolved.")
 
 
 # ───────────────────────── Legacy aliases (backward-compat) ─────────────────────────
