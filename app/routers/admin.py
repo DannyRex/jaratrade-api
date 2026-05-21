@@ -408,7 +408,11 @@ def orders_stats(
     # successful payment + no payout dispatched.
     from ..routers.payouts import _is_payout_eligible
 
-    orders_with_payout = {row[0] for row in db.query(Payout.order_id).all()}
+    # Failed payouts don't count - those orders still need to be paid out.
+    orders_with_payout = {
+        row[0]
+        for row in db.query(Payout.order_id).filter(Payout.status != "failed").all()
+    }
     pending_payouts = 0
     for o in db.query(Order).filter(Order.status == "delivered").all():
         if o.id in orders_with_payout:

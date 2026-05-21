@@ -262,3 +262,35 @@ def test_payouts_list_filters_by_status(client, admin_token, importer_token):
     assert r.status_code == 200
     rows = r.json()["payload"]["rows"]
     assert len(rows) >= 1
+
+
+def test_failed_payout_can_be_retried(client, admin_token, importer_token):
+    """A payout that failed (e.g. Flutterwave rejected the transfer) must not
+    permanently block a retry once the underlying issue is resolved."""
+    order_id = _setup_paid_delivered_order(importer_token, client)
+    # Simulate a previous payout attempt that Flutterwave rejected.
+    with SessionLocal() as db:
+        order = db.get(Order, order_id)
+        db.add(Payout(
+            order_id=order.id,
+            seller_id=order.exporter_id or "seller",
+            amount=order.total,
+            currency=order.currency,
+            reference=f"JARAPAYFAIL{order.id[:6]}",
+            status="failed",
+            failure_reason="Flutterwave rejected the transfer: IP whitelisting",
+        ))
+        db.commit()
+
+    # The order is still listed as eligible (a failed attempt doesn't hide it).
+    r = client.get("/adm/payouts/eligible", headers={"Authorization": f"Bearer {admin_token}"})
+    assert r.status_code == 200
+    assert any(row["order_id"] == order_id for row in r.json()["payload"]["rows"])
+
+    # Dispatching again succeeds rather than 409'ing on the stale failed row.
+    r = client.post(
+        f"/adm/payouts/{order_id}/send",
+        headers={"Authorization": f"Bearer {admin_token}"},
+    )
+    assert r.status_code == 200, r.text
+    assert r.json()["payload"]["status"] in ("sent", "pending", "completed")

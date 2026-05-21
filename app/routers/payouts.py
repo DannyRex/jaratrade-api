@@ -144,7 +144,13 @@ def eligible_for_payout(
     rate_pct = read_commission_rate(db)
     preview = []
     for order in delivered:
-        existing = db.query(Payout).filter(Payout.order_id == order.id).first()
+        # A failed payout shouldn't hide the order - admin needs to retry it.
+        # Only a pending/sent/completed payout means the order is handled.
+        existing = (
+            db.query(Payout)
+            .filter(Payout.order_id == order.id, Payout.status != "failed")
+            .first()
+        )
         if existing:
             continue
         successful_payment = (
@@ -212,7 +218,13 @@ async def dispatch_payout(
                 code=400,
             )
 
-    if db.query(Payout).filter(Payout.order_id == order.id).first():
+    # A previously-failed payout doesn't block a retry - only a live one
+    # (pending / sent / completed) does, so an order is never paid out twice.
+    if (
+        db.query(Payout)
+        .filter(Payout.order_id == order.id, Payout.status != "failed")
+        .first()
+    ):
         raise PayoutDispatchError("Payout already initiated for this order", code=409)
 
     successful = (
