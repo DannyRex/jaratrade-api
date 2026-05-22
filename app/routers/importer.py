@@ -522,7 +522,7 @@ def confirm_receipt(
     """Buyer confirms they received the order.
 
     This is the explicit hand-off that releases the seller's escrow
-    immediately, bypassing the 7-day dispute window. Once stamped, the
+    immediately, bypassing the 1-day dispute window. Once stamped, the
     nightly payout cron will pick this order up on its next pass; admin
     can also trigger the payout right away from /admin/payouts.
 

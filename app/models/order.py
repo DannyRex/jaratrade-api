@@ -30,7 +30,7 @@ class Order(Base, TimestampMixin):
     delivery_info: Mapped[Optional[str]] = mapped_column(Text, nullable=True)  # JSON
 
     # When the buyer explicitly confirmed receipt. Triggers immediate payout
-    # eligibility (overrides the 7-day dispute-window wait).
+    # eligibility (overrides the 1-day dispute-window wait).
     confirmed_received_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
 
     items: Mapped[List["OrderItem"]] = relationship("OrderItem", back_populates="order", cascade="all, delete-orphan")

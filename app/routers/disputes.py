@@ -28,7 +28,7 @@ from ..services.flutterwave import refund_payment
 settings = get_settings()
 
 VALID_REASONS = {"damaged", "wrong_item", "not_received", "quality", "other"}
-DISPUTE_WINDOW_DAYS = 7  # how long after delivery a buyer can raise a dispute
+DISPUTE_WINDOW_DAYS = 1  # how long after delivery a buyer can raise a dispute
 
 
 def _serialize(d: Dispute, order: Optional[Order] = None) -> dict:

@@ -674,7 +674,7 @@ def update_order_status(
 
     Side effects:
       - `order.status` is updated.
-      - `order.time_updated` is stamped (the payout cron's 7-day dispute
+      - `order.time_updated` is stamped (the payout cron's 1-day dispute
         window measures from this timestamp once status == "delivered").
       - A status-change email goes to the importer.
     """

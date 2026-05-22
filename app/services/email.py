@@ -619,7 +619,7 @@ def t_order_received_seller(
         + _button("View &amp; confirm order", link)
         + ((_section_title("Items") + _line_items(items, currency)) if items else "")
         + _totals(totals, currency)
-        + _note("<strong>Reminder:</strong> ship promptly and mark the order as shipped. Your payout is released once the buyer confirms delivery, or 7 days after the order is delivered.")
+        + _note("<strong>Reminder:</strong> ship promptly and mark the order as shipped. Your payout is released once the buyer confirms delivery, or 1 day after the order is delivered.")
     )
     return subject, _layout(content, preheader=f"{importer_name} placed order {order_no}.")
 

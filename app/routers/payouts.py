@@ -1,7 +1,7 @@
 """Admin payouts.
 
 For v3.5 we offer the manual disbursement flow as the source of truth:
-when an order is delivered + the 7-day dispute window has closed, admin
+when an order is delivered + the 1-day dispute window has closed, admin
 can release the seller's share to their bank account via Flutterwave's
 transfers API. Future iterations will automate this via cron.
 
@@ -36,7 +36,7 @@ router = APIRouter(prefix="/adm/payouts", tags=["admin-payouts"])
 
 # How long after delivery before a payout can be released. Matches the
 # dispute window so buyers always have a chance to raise an issue.
-DISPUTE_WINDOW_DAYS = 7
+DISPUTE_WINDOW_DAYS = 1
 
 
 def _serialize(p: Payout, order: Optional[Order] = None) -> dict:

@@ -284,7 +284,7 @@ def inventory_reminders(db: Session, stale_after_days: int = 7) -> int:
 def process_payouts(db: Session) -> int:
     """Auto-dispatch seller payouts for every order eligible right now.
 
-    Eligible = delivered + past 7-day dispute window + successful payment +
+    Eligible = delivered + past 1-day dispute window + successful payment +
     no payout record yet. Calls the same shared `dispatch_payout` helper
     the admin /adm/payouts/{id}/send endpoint uses, so behaviour and audit
     trail are identical regardless of how the payout was triggered.
@@ -306,7 +306,7 @@ def process_payouts(db: Session) -> int:
     )
 
     # Either the buyer confirmed receipt (immediate release) or the
-    # delivered timestamp has aged past the 7-day window.
+    # delivered timestamp has aged past the 1-day window.
     cutoff = datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(days=DISPUTE_WINDOW_DAYS)
     candidates = (
         db.query(Order)

@@ -402,7 +402,7 @@ def orders_stats(
     # "Pending payouts" must mean the same thing the /admin/payouts
     # "Eligible" tab shows, otherwise the orders-dashboard card and the
     # payouts screen disagree (card said 1, screen showed none, because a
-    # delivered order still inside its 7-day dispute window counted on the
+    # delivered order still inside its 1-day dispute window counted on the
     # card but isn't eligible yet). Reuse the exact eligibility rule:
     # delivered + (past dispute window OR buyer-confirmed) + has a
     # successful payment + no payout dispatched.
