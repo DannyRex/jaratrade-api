@@ -14,7 +14,7 @@ from ..constants import ROLE_ADMIN
 from ..database import get_db
 from ..deps import require_exporter
 from ..envelope import fail, success
-from ..models import Order, OrderItem, Product, Store, User
+from ..models import Bank, Order, OrderItem, Product, Store, User
 from ..models.user import BusinessProfile
 from ..routers.public import _serialize_product_summary
 from ..security import hash_password, verify_password
@@ -25,6 +25,7 @@ from ..services.email import (
     t_new_exporter_pending_review_admin,
     t_order_status_update,
 )
+from ..services.flutterwave import resolve_account
 
 router = APIRouter(prefix="/exp", tags=["exporter"])
 
@@ -95,7 +96,7 @@ def get_profile(
 
 
 @router.post("/profile")
-def update_profile(
+async def update_profile(
     user: User = Depends(require_exporter),
     db: Session = Depends(get_db),
     firstname: Optional[str] = Form(default=None),
@@ -153,17 +154,52 @@ def update_profile(
     # one yet, but the moment they fill in business details from their
     # profile screen we create the row. business_name is the only
     # NOT NULL field on the table, so it's the gate.
-    if user.business:
+    # Snapshot the current bank details so we only re-verify on a change.
+    prev_account = user.business.account_number if user.business else None
+    prev_bank = user.business.bank_id if user.business else None
+
+    biz = user.business
+    if biz:
         for k, v in biz_updates.items():
             if v is not None:
-                setattr(user.business, k, v)
+                setattr(biz, k, v)
     elif business_name:
-        db.add(BusinessProfile(
+        biz = BusinessProfile(
             user_id=user.id,
             **{k: v for k, v in biz_updates.items() if v is not None},
-        ))
+        )
+        db.add(biz)
+
+    # Verify the seller's bank account with Flutterwave whenever the bank
+    # details change. An account number that doesn't resolve is rejected here
+    # - so it can't be saved and then fail opaquely at payout time with
+    # "Account resolve failed". The bank-registered name is stored as the
+    # authoritative account name.
+    bank_changed = biz is not None and (
+        biz.account_number != prev_account or biz.bank_id != prev_bank
+    )
+    if bank_changed and biz.account_number and biz.bank_id:
+        bank = db.get(Bank, biz.bank_id)
+        code = (bank.flutter_code or bank.paystack_code) if bank else None
+        if code:
+            try:
+                resolved = await resolve_account(
+                    account_number=biz.account_number, account_bank=code,
+                )
+            except Exception:  # noqa: BLE001
+                resolved = {}
+            resolved_name = (resolved or {}).get("account_name")
+            if not resolved_name:
+                raise fail(
+                    f"We couldn't verify account number {biz.account_number} with "
+                    f"{bank.name if bank else 'that bank'}. Please double-check the "
+                    "account number and that the correct bank is selected.",
+                    code=400,
+                )
+            biz.account_name = resolved_name
+
     db.commit()
-    return success({"updated": True})
+    return success({"updated": True, "account_name": biz.account_name if biz else None})
 
 
 @router.post("/change_password")

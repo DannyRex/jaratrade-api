@@ -258,3 +258,38 @@ def test_submit_for_review_blocked_without_id_document(client):
     r = client.post("/exp/submit-for-review", headers={"Authorization": f"Bearer {token}"})
     assert r.status_code == 400
     assert "means of id document" in r.text.lower()
+
+
+def test_bank_account_resolved_name_is_stored(client):
+    """Saving valid bank details verifies the account and stores the
+    bank-resolved account name."""
+    token = _register_exporter(client, "bankok@jaratrade.com")
+    with SessionLocal() as db:
+        bank_id = db.query(Bank).filter(Bank.flutter_code.isnot(None)).first().id
+    r = client.post(
+        "/exp/profile",
+        headers={"Authorization": f"Bearer {token}"},
+        data={"business_name": "Bank OK Ltd", "bank_id": bank_id, "account_number": "0690000031"},
+    )
+    assert r.status_code == 200, r.text
+    assert r.json()["payload"]["account_name"]  # resolved name was stored
+
+
+def test_unresolvable_bank_account_is_rejected(client, monkeypatch):
+    """A bank account Flutterwave can't resolve is rejected at save time, so
+    it can't be stored and then fail later at payout ('Account resolve
+    failed')."""
+    async def _no_resolve(**kwargs):
+        return {}  # no account_name => unresolvable
+
+    monkeypatch.setattr("app.routers.exporter.resolve_account", _no_resolve)
+    token = _register_exporter(client, "bankbad@jaratrade.com")
+    with SessionLocal() as db:
+        bank_id = db.query(Bank).filter(Bank.flutter_code.isnot(None)).first().id
+    r = client.post(
+        "/exp/profile",
+        headers={"Authorization": f"Bearer {token}"},
+        data={"business_name": "Bank Bad Ltd", "bank_id": bank_id, "account_number": "0000000000"},
+    )
+    assert r.status_code == 400
+    assert "verify" in r.text.lower()
