@@ -446,27 +446,32 @@ def _delivery_html(delivery: Optional[dict]) -> str:
 # Each function returns (subject, html). Copy adapted from the BRD.
 
 def t_welcome_verify(name: str, verify_link: str, code: str = "") -> tuple[str, str]:
-    """Verification email. Renders both a click-to-verify button and the raw
-    code, because the verify-email page offers a paste-the-code fallback for
-    cross-device flows (read email on phone, verify on desktop)."""
-    subject = "Verify your email to get started on Jaratrade"
+    """Verification email. The 6-digit OTP is the primary affordance - big,
+    spaced, easy to type on mobile. The click-through button is still
+    rendered as a convenience for desktop users on the same device they
+    received the email."""
+    subject = "Your Jaratrade verification code"
     code_block = ""
     if code:
+        # Larger + more spaced than the previous "paste this fallback" box.
+        # The OTP is now the headline action, not a secondary backup.
         code_block = (
-            _p("Or paste this code into the verification page if the button doesn't work:", muted=True, size=13)
-            + f'<p style="margin:0 0 18px 0;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;'
-              f'font-size:18px;font-weight:700;letter-spacing:3px;background:{_TINT};color:{_INK};'
-              f'padding:14px 18px;border-radius:8px;border:1px solid #e3e8f3;display:inline-block;">{code}</p>'
+            _p("Enter this code on the verification page:", muted=True, size=14)
+            + f'<p style="margin:0 0 24px 0;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;'
+              f'font-size:32px;font-weight:700;letter-spacing:10px;background:{_TINT};color:{_INK};'
+              f'padding:18px 24px;border-radius:10px;border:1px solid #e3e8f3;display:inline-block;">{code}</p>'
+            + _p("Code expires in 24 hours.", muted=True, size=12)
         )
     content = (
         _eyebrow(f"Hi {name or 'there'},")
         + _h1("Welcome to Jaratrade.")
-        + _p("You're one click away. Confirm your email address to activate your account and start trading.")
-        + _button("Verify my email", verify_link)
+        + _p("Confirm your email address to activate your account.")
         + code_block
+        + _p("Or click here to verify in one tap:", muted=True, size=13)
+        + _button("Verify my email", verify_link)
         + _p("If you didn't create a Jaratrade account, you can safely ignore this email.", muted=True, size=13)
     )
-    return subject, _layout(content, preheader="Confirm your email to activate your Jaratrade account.")
+    return subject, _layout(content, preheader="Your Jaratrade verification code is ready.")
 
 
 def t_account_under_review(name: str) -> tuple[str, str]:

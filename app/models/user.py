@@ -126,7 +126,10 @@ class EmailVerificationToken(Base, TimestampMixin):
 
     id: Mapped[str] = mapped_column(String(64), primary_key=True, default=new_id)
     user_id: Mapped[str] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
-    code: Mapped[str] = mapped_column(String(128), unique=True, nullable=False, index=True)
+    # Not unique - we switched to 6-digit OTPs (see _send_verification_email)
+    # which can collide across users. Verify lookup is scoped by
+    # (user_id, code), so global uniqueness isn't required.
+    code: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
     expires_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
     used: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
 
