@@ -71,15 +71,37 @@ def _handle_charge(event_data: Dict[str, Any], db: Session) -> Dict[str, Any]:
 
     status = str(event_data.get("status", "")).lower()
     # FLW uses "successful" / "failed" / "cancelled"
+    just_paid = False
     if status == "successful":
         payment.status = "successful"
         order = db.get(Order, payment.order_id)
         if order and order.status == "pending":
             order.status = "paid"
+            just_paid = True
     elif status in ("failed", "cancelled"):
         payment.status = "failed"
     payment.provider_payload = _serialise_for_audit(event_data)
     db.commit()
+
+    # Fire order-confirmation emails from the webhook path too. If the
+    # buyer closes their browser right after paying on FLW (so verify_pay
+    # never runs), the webhook is the only signal we'll get - the buyer
+    # would otherwise pay but never receive a confirmation. Dedupe keys
+    # on send_template prevent double-send if verify_pay also runs.
+    if just_paid:
+        from ..models import User
+        from ..routers.importer import _send_order_confirmation_emails
+        order = db.get(Order, payment.order_id)
+        buyer = db.get(User, order.importer_id) if order else None
+        if order and buyer:
+            try:
+                _send_order_confirmation_emails(db, order, buyer)
+            except Exception:  # noqa: BLE001
+                # Webhook handling must not error on email problems, or FLW
+                # will retry the webhook indefinitely. Log via the email
+                # service's own internal logger, not our caller's signal.
+                log.exception("flutterwave_webhook: order confirmation email failed")
+
     return {"handled": True, "payment_status": payment.status, "tx_ref": tx_ref}
 
 

@@ -452,8 +452,29 @@ def create_order(
     cart.status = "ordered"
     db.commit()
 
-    # Notify both parties. Build the rich line-item + cost detail once so the
-    # buyer's confirmation and the seller's notification share it.
+    # Order-confirmation emails (to buyer + seller) intentionally NOT sent
+    # here. The order sits in "pending" status until payment verifies. If
+    # the buyer abandons before paying, they shouldn't receive a confirmation
+    # email for an order they never actually placed - same logic for the
+    # seller, who doesn't want a "new order!" ping for orders that never
+    # get paid for. Both emails fire from `_send_order_confirmation_emails`
+    # inside the payment-verify path (verify_pay / FLW webhook handler).
+    return success({"order_id": order.id, "order_number": order.order_number, "total": f"{total:.2f}"})
+
+
+def _send_order_confirmation_emails(db: Session, order: Order, buyer: User) -> None:
+    """Send the rich order-confirmation emails to buyer + seller.
+
+    Called from the payment-success path so emails fire only after the
+    buyer has actually paid (vs being sent eagerly when Place Order is
+    clicked, which would email people about orders that never get paid for).
+    Dedupe keys make this safe to call multiple times - the second call
+    is a no-op via NotificationLog.
+
+    Reconstructs the email payload from persisted Order data (items,
+    fees, delivery_info) so we don't have to thread it through from
+    create_order.
+    """
     email_items = [
         {
             "name": it.product_name,
@@ -463,28 +484,36 @@ def create_order(
         }
         for it in order.items
     ]
+    subtotal = sum(float(it.subtotal) for it in order.items)
+    logistics_fee = float(order.logistics_fee or 0)
+    platform_fee = float(order.platform_fee or 0)
+    total = float(order.total)
     order_date = order.time_created.strftime("%d %b %Y")
+    try:
+        delivery = json.loads(order.delivery_info or "{}")
+    except (TypeError, ValueError):
+        delivery = {}
 
     order_link = f"{settings.site_url}/importer/orders/{order.id}"
     subject, html = t_order_placed_buyer(
-        user.firstname or "there", order.order_number, order_link,
+        buyer.firstname or "there", order.order_number, order_link,
         currency=order.currency, items=email_items,
         subtotal=subtotal, logistics_fee=logistics_fee, platform_fee=platform_fee,
         total=total, delivery=delivery, order_date=order_date,
         shipping_mode=order.shipping_mode,
     )
     send_template(
-        db, template="order_placed_buyer", to=user.email, subject=subject, html=html,
-        user_id=user.id, dedupe_key=f"order_placed_buyer:{order.id}",
+        db, template="order_placed_buyer", to=buyer.email, subject=subject, html=html,
+        user_id=buyer.id, dedupe_key=f"order_placed_buyer:{order.id}",
     )
-    if exporter_id:
-        exporter = db.get(User, exporter_id)
+    if order.exporter_id:
+        exporter = db.get(User, order.exporter_id)
         if exporter:
             seller_link = f"{settings.site_url}/exporter/orders/{order.id}"
             subject, html = t_order_received_seller(
                 exporter.firstname or "there",
                 order.order_number,
-                user.fullname or user.email,
+                buyer.fullname or buyer.email,
                 seller_link,
                 currency=order.currency, items=email_items,
                 subtotal=subtotal, logistics_fee=logistics_fee,
@@ -494,8 +523,6 @@ def create_order(
                 db, template="order_received_seller", to=exporter.email, subject=subject, html=html,
                 user_id=exporter.id, dedupe_key=f"order_received_seller:{order.id}",
             )
-
-    return success({"order_id": order.id, "order_number": order.order_number, "total": f"{total:.2f}"})
 
 
 @router.get("/order")
@@ -857,6 +884,12 @@ async def verify_pay(
             user.monthly_spent = float(user.monthly_spent or 0) + spent_in_plan_ccy
 
         db.commit()
+
+        # Rich order-confirmation emails (buyer + seller). Moved here from
+        # create_order so they only fire after payment actually succeeds -
+        # see comment in create_order. Dedupe keys make this idempotent if
+        # both verify_pay AND the FLW webhook fire for the same payment.
+        _send_order_confirmation_emails(db, order, user)
 
         # Receipt email
         subject, html = t_payment_invoice(
