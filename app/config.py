@@ -33,6 +33,12 @@ class Settings(BaseSettings):
         "http://localhost:3030",
         "https://jaratrade.com",
     ])
+    # Optional regex matched against the request `Origin` header. Used for
+    # Vercel preview deployments whose subdomains change per build (e.g.
+    # `^https://jaratrade-v2-.*\.vercel\.app$`). Leave empty in production -
+    # exact-match cors_origins is stricter and avoids accidental wildcard
+    # exposure. Set to a sensible pattern on dev/staging only.
+    cors_origin_regex: str = Field(default="")
 
     # Cloudinary
     cloudinary_cloud_name: str = Field(default="")
