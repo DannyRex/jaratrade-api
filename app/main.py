@@ -94,6 +94,12 @@ observability.instrument_app(app, engine)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.cors_origins,
+    # Regex-based allowlist for ephemeral hostnames like Vercel preview URLs
+    # (e.g. `https://jaratrade-v2-<hash>-<team>.vercel.app`). Each Vercel
+    # preview deployment gets a new subdomain so an exact-match list can't
+    # keep up. Setting CORS_ORIGIN_REGEX='' (the default) leaves regex-based
+    # matching off entirely - prod typically only needs the exact list.
+    allow_origin_regex=settings.cors_origin_regex or None,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
