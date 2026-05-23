@@ -668,6 +668,56 @@ def _resolve_importer_plan(db: Session, user: User) -> Optional[ImporterPlan]:
     return plan
 
 
+def _resolve_pending_tx_ref(
+    db: Session,
+    order: Order,
+    charge_amount: float,
+    charge_currency: str,
+) -> str:
+    """Reuse the existing pending Payment's tx_ref when safe; otherwise mint
+    a fresh one and mark the old row stale.
+
+    The subtlety: Flutterwave caches payment sessions by tx_ref. If we call
+    /v3/payments twice with the same tx_ref but a different currency, FLW
+    returns the *original* session in the original currency - so flipping
+    FLW_CHARGE_CURRENCY between attempts on the same order would silently
+    keep charging in the old currency. Detecting a currency mismatch and
+    rotating tx_ref forces FLW to create a fresh session in the new
+    currency.
+
+    Same-currency retries (the common case) still reuse the tx_ref so we
+    don't accumulate duplicate Payment rows or burn through FLW's tx_ref
+    rate limit.
+    """
+    existing = (
+        db.query(Payment)
+        .filter(Payment.order_id == order.id, Payment.status == "pending")
+        .order_by(Payment.time_created.desc())
+        .first()
+    )
+    same_currency = existing and (existing.currency or "").upper() == charge_currency.upper()
+    if existing and same_currency:
+        # Keep the same tx_ref - FLW's session caching is a feature here:
+        # the buyer gets the same checkout URL across reloads.
+        existing.amount = charge_amount
+        db.commit()
+        return existing.tx_ref
+    if existing:
+        # Currency changed since the last init attempt - retire the old
+        # Payment row so it doesn't get confused with the new session.
+        existing.status = "cancelled"
+    tx_ref = "JARA" + secrets.token_urlsafe(8).replace("-", "")[:12]
+    db.add(Payment(
+        order_id=order.id,
+        tx_ref=tx_ref,
+        amount=charge_amount,
+        currency=charge_currency,
+        status="pending",
+    ))
+    db.commit()
+    return tx_ref
+
+
 def _resolve_charge_currency(order: Order) -> tuple[float, str]:
     """Pick the (amount, currency) we ask Flutterwave to charge the buyer.
 
@@ -755,32 +805,7 @@ async def init_payment(
     # FLW_CHARGE_CURRENCY is set to e.g. GBP for better UK-card acceptance).
     charge_amount, charge_currency = _resolve_charge_currency(order)
 
-    existing_pending = (
-        db.query(Payment)
-        .filter(Payment.order_id == order.id, Payment.status == "pending")
-        .order_by(Payment.time_created.desc())
-        .first()
-    )
-    if existing_pending:
-        tx_ref = existing_pending.tx_ref
-        # If the charge currency changed since the Payment was created (e.g.
-        # admin flipped FLW_CHARGE_CURRENCY mid-flow), update the row so it
-        # reflects what we're actually charging now. Otherwise reconciliation
-        # against FLW's records won't line up.
-        existing_pending.amount = charge_amount
-        existing_pending.currency = charge_currency
-        db.commit()
-    else:
-        tx_ref = "JARA" + secrets.token_urlsafe(8).replace("-", "")[:12]
-        payment = Payment(
-            order_id=order.id,
-            tx_ref=tx_ref,
-            amount=charge_amount,
-            currency=charge_currency,
-            status="pending",
-        )
-        db.add(payment)
-        db.commit()
+    tx_ref = _resolve_pending_tx_ref(db, order, charge_amount, charge_currency)
 
     # Pull the admin-configured commission rate + commission subaccount so the
     # split honours whatever's currently set in /admin/settings.
@@ -850,29 +875,7 @@ async def init_payment_standard(
     # full rationale).
     charge_amount, charge_currency = _resolve_charge_currency(order)
 
-    # Reuse pending Payment row if one exists (same idempotency rule as
-    # the inline endpoint).
-    existing_pending = (
-        db.query(Payment)
-        .filter(Payment.order_id == order.id, Payment.status == "pending")
-        .order_by(Payment.time_created.desc())
-        .first()
-    )
-    if existing_pending:
-        tx_ref = existing_pending.tx_ref
-        existing_pending.amount = charge_amount
-        existing_pending.currency = charge_currency
-        db.commit()
-    else:
-        tx_ref = "JARA" + secrets.token_urlsafe(8).replace("-", "")[:12]
-        db.add(Payment(
-            order_id=order.id,
-            tx_ref=tx_ref,
-            amount=charge_amount,
-            currency=charge_currency,
-            status="pending",
-        ))
-        db.commit()
+    tx_ref = _resolve_pending_tx_ref(db, order, charge_amount, charge_currency)
 
     from ..routers.settings_router import read_commission_rate, read_commission_subaccount_id
 
