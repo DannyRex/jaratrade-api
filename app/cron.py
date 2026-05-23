@@ -373,10 +373,42 @@ def run(name: str) -> int:
     return 0
 
 
+def _guard_against_sqlite_fallback() -> None:
+    """Refuse to run cron jobs against the dev SQLite default.
+
+    Cron containers on Railway/Fly are deployed as a separate service from
+    the web container, so they have their own env vars. If DATABASE_URL
+    isn't wired up on the cron service, the app silently falls through to
+    the SQLite default in app/config.py - and then every query crashes
+    with "no such table: orders" because the SQLite file is fresh in the
+    container. Worse, on a future change the cron could *not* crash and
+    instead happily process an empty result set, missing real payouts.
+
+    Fail loudly here with a fix-it message instead.
+    """
+    from .config import get_settings
+
+    url = get_settings().database_url
+    if url.startswith("sqlite"):
+        log.error(
+            "Refusing to run: DATABASE_URL resolved to %r, which is the "
+            "SQLite dev fallback. On Railway, open the cron service's "
+            "Variables tab and add DATABASE_URL referencing the Postgres "
+            "plugin (the value '${{Postgres.DATABASE_URL}}' is what the "
+            "web service uses). Also copy across FLW_SECRET_KEY, "
+            "RESEND_API_KEY, and any other secrets the cron needs.",
+            url,
+        )
+        return 2  # caller (main) converts to exit code
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(prog="python -m app.cron")
     parser.add_argument("job", choices=list(JOBS) + ["all"])
     args = parser.parse_args()
+    guard_rc = _guard_against_sqlite_fallback()
+    if guard_rc:
+        return guard_rc
     return run(args.job)
 
 
