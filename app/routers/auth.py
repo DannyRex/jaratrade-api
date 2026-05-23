@@ -1,6 +1,7 @@
 """Auth - register/login/verify-email per role."""
 from __future__ import annotations
 
+import secrets
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 
@@ -21,6 +22,23 @@ from ..services.email import (
     t_welcome_verify,
     verification_email,
 )
+
+
+def _new_otp() -> str:
+    """6-digit zero-padded numeric one-time code.
+
+    Long opaque tokens (24 random bytes / 32 chars) work but: (a) they're
+    hostile to paste from email on phones, (b) email clients sometimes
+    line-wrap or rewrite long URLs which silently changes the value the
+    click delivers vs the value displayed in the same email, producing the
+    confusing "link expired but pasting works" report. A short numeric OTP
+    avoids both problems.
+
+    1M possible values; we scope lookup by (user_id, code) so collisions
+    across users are fine, and the verify endpoint is rate-limited per IP
+    via slowapi to bound brute-force risk.
+    """
+    return f"{secrets.randbelow(1_000_000):06d}"
 
 router = APIRouter(tags=["auth"])
 
@@ -128,7 +146,16 @@ def _check_unique_email(db: Session, email: str) -> None:
 
 
 def _send_verification_email(db: Session, user: User) -> str:
-    code = secure_token(24)
+    code = _new_otp()
+    # Invalidate any prior unused codes for this user so an old email
+    # (which the user may already have ignored) can't still verify the
+    # account behind their back. Marks them used; the cron-cleanup row
+    # already handles deleting expired rows.
+    (
+        db.query(EmailVerificationToken)
+        .filter(EmailVerificationToken.user_id == user.id, EmailVerificationToken.used.is_(False))
+        .update({"used": True})
+    )
     db.add(EmailVerificationToken(
         user_id=user.id,
         code=code,
@@ -136,7 +163,15 @@ def _send_verification_email(db: Session, user: User) -> str:
     ))
     db.commit()
     s = get_settings()
-    link = f"{s.site_url}/auth/verify-email?code={code}&role={user.role}"
+    # Email is part of the link so the verify-email page can scope the
+    # lookup to (this user's) code on auto-submit. Without it the backend
+    # would have to find the code globally, which is fine for a 24-byte
+    # token but unsafe for a 6-digit OTP that could coincidentally collide
+    # across users.
+    link = (
+        f"{s.site_url}/auth/verify-email"
+        f"?email={user.email}&role={user.role}&code={code}"
+    )
     subject, html = t_welcome_verify(user.firstname or "there", link, code)
     send_template(
         db,
@@ -334,13 +369,39 @@ def register_admin(
 
 # ───────────────────────── Email verification ─────────────────────────
 
-def _verify_account(db: Session, code: str, expected_role: str):
-    token = db.query(EmailVerificationToken).filter(EmailVerificationToken.code == code).first()
-    if not token or token.used or token.expires_at < datetime.now(timezone.utc).replace(tzinfo=None):
-        raise fail("Verification link is invalid or expired", code=400)
-    user = db.get(User, token.user_id)
-    if not user or user.role != expected_role:
-        raise fail("Account not found", code=404)
+def _verify_account(db: Session, email: str, code: str, expected_role: str):
+    """Verify a user's email by matching a 6-digit OTP scoped to (email, code).
+
+    Idempotent: if the same user clicks the email link more than once - or an
+    inbox-side link prefetcher (Microsoft Defender Safe Links, Gmail prefetch)
+    consumed the code first - the second call still returns success rather
+    than the confusing "link expired" message. Once a user is verified they
+    stay verified; replaying the verify is a no-op.
+    """
+    user = db.query(User).filter(User.email == email, User.role == expected_role).first()
+    if not user:
+        # Don't leak which emails are registered. Same shape as "invalid code".
+        raise fail("Verification code is invalid or expired", code=400)
+
+    # Already verified - return success. This is the path that runs when a
+    # user clicks the email button a second time, or an inbox security
+    # scanner prefetched the link before they opened it.
+    if user.email_verified:
+        return success({"verified": True, "already": True}, message="Email already verified")
+
+    # Otherwise the code must match an unused, unexpired token for this user.
+    token = (
+        db.query(EmailVerificationToken)
+        .filter(
+            EmailVerificationToken.user_id == user.id,
+            EmailVerificationToken.code == code,
+            EmailVerificationToken.used.is_(False),
+        )
+        .first()
+    )
+    if not token or token.expires_at < datetime.now(timezone.utc).replace(tzinfo=None):
+        raise fail("Verification code is invalid or expired", code=400)
+
     user.email_verified = True
     if expected_role == ROLE_IMPORTER:
         user.is_active = True  # importers self-activate on email verify
@@ -349,14 +410,29 @@ def _verify_account(db: Session, code: str, expected_role: str):
     return success({"verified": True}, message="Email verified")
 
 
+# 10/minute per IP - 6-digit OTP has 1M permutations, so without rate limiting
+# a determined attacker could brute-force a single email in seconds. 10/min
+# means a successful guess takes ~5.7 years on average per email.
 @router.post("/imp/account_verification")
-def verify_importer(code: str = Form(...), db: Session = Depends(get_db)):
-    return _verify_account(db, code, ROLE_IMPORTER)
+@limiter.limit("10/minute")
+def verify_importer(
+    request: Request,
+    email: EmailStr = Form(...),
+    code: str = Form(...),
+    db: Session = Depends(get_db),
+):
+    return _verify_account(db, email, code, ROLE_IMPORTER)
 
 
 @router.post("/exp/account_verification")
-def verify_exporter(code: str = Form(...), db: Session = Depends(get_db)):
-    return _verify_account(db, code, ROLE_EXPORTER)
+@limiter.limit("10/minute")
+def verify_exporter(
+    request: Request,
+    email: EmailStr = Form(...),
+    code: str = Form(...),
+    db: Session = Depends(get_db),
+):
+    return _verify_account(db, email, code, ROLE_EXPORTER)
 
 
 def _request_verify(db: Session, email: str, expected_role: str):
