@@ -90,39 +90,39 @@ def _reset_seller_to_free(db: Session) -> None:
 
 # ── Plan ceilings ─────────────────────────────────────────────────────────
 
-def test_free_tier_blocks_third_store(client: TestClient):
-    """max_store=2 on Free. Seed already created store #1, so the 2nd store
-    must succeed and the 3rd must be blocked."""
+def test_free_tier_blocks_second_store(client: TestClient):
+    """max_store=1 on Free. Seed already created store #1, so the 2nd
+    store must be blocked. "Store" and "market location" are unified
+    user-side: one shop per Free seller."""
     with SessionLocal() as db:
         _reset_seller_to_free(db)
         free = _free_plan(db)
-        assert free.max_store == 2
+        assert free.max_store == 1
         market_id = db.query(Market).first().id
 
     token = _exporter_session(client)
     headers = {"Authorization": f"Bearer {token}"}
 
-    # 2nd store - allowed
-    r = client.put("/exp/store", headers=headers,
-                   data={"market_id": market_id, "address": "Stall 13"})
-    assert r.status_code == 200, r.text
-
-    # 3rd store - should be rejected
+    # 2nd store - should be rejected (Free is capped at 1).
     r = client.put("/exp/store", headers=headers,
                    data={"market_id": market_id, "address": "Stall 14"})
     assert r.status_code == 403, (
-        f"Free tier exporter should be blocked at 3rd store; got {r.status_code}: {r.text}"
+        f"Free tier exporter should be blocked at 2nd store; got {r.status_code}: {r.text}"
     )
     assert "store" in r.text.lower()
+    assert "premium" in r.text.lower(), (
+        "Error should nudge toward Premium upgrade"
+    )
 
 
-def test_free_tier_blocks_second_market(client: TestClient):
-    """max_market=1 on Free. The seller is allowed one market location;
-    adding a store in a *different* market must be blocked.
+def test_free_tier_market_cap_is_defensive(client: TestClient):
+    """max_market=1 on Free. With max_store also = 1, the store cap fires
+    first - which is fine; market cap is a defensive guard for any future
+    plan that allows multiple stores while still restricting geography.
 
-    Note: max_store also matters here. After the seed, the seller has 1
-    store; we go straight to adding a store in a second market so the
-    market check trips before the store-count check."""
+    This test confirms that trying to expand to a 2nd market is blocked
+    (we don't strictly care which guard fires, only that the request is
+    rejected with a Premium nudge)."""
     with SessionLocal() as db:
         _reset_seller_to_free(db)
         free = _free_plan(db)
@@ -130,25 +130,16 @@ def test_free_tier_blocks_second_market(client: TestClient):
         markets = db.query(Market).limit(2).all()
         assert len(markets) >= 2, "Seed must have at least 2 markets for this test"
         second_market_id = markets[1].id
-        seeded_store = db.query(Store).filter(
-            Store.exporter_id == _exporter_user(db).id,
-        ).first()
-        # Sanity-check the seed put the seller in a different market than
-        # the one we're about to try.
-        assert seeded_store.market_id != second_market_id
 
     token = _exporter_session(client)
     headers = {"Authorization": f"Bearer {token}"}
 
-    # Going straight to a second market - this is the seller's 2nd store
-    # overall (still under max_store=2) but the 2nd distinct market (over
-    # max_market=1), so the market cap should fire.
     r = client.put("/exp/store", headers=headers,
                    data={"market_id": second_market_id, "address": "Stall 1"})
     assert r.status_code == 403, (
         f"Free tier exporter should be blocked from a 2nd market; got {r.status_code}: {r.text}"
     )
-    assert "market" in r.text.lower()
+    assert "premium" in r.text.lower()
 
 
 def test_free_tier_blocks_sixth_product(client: TestClient):

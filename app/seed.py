@@ -131,13 +131,20 @@ def _seed_plans(db: Session) -> None:
             is_default=0,
         ))
     if db.query(ExporterPlan).count() == 0:
+        # Free Tier intentionally caps at a single store. A "store" and a
+        # "market location" are effectively the same concept (your shop's
+        # physical presence in a Nigerian marketplace), so we don't expose
+        # them as two separate dimensions to sellers. max_market stays at 1
+        # defensively - it can't fire while max_store=1, but if a future
+        # change raises max_store the market guard still protects against
+        # geographic expansion on Free.
         db.add(ExporterPlan(
             title="Free Tier",
-            description="Up to 2 stores and 5 product listings. 2% commission per transaction.",
+            description="1 store and up to 5 product listings. 2% commission per transaction.",
             monthly_subscription_fee=0,
             transaction_limit=-1,
             commission_percent=2,
-            max_store=2,
+            max_store=1,
             max_product=5,
             max_market=1,
             product_promotion=0,
