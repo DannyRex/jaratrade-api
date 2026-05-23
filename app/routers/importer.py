@@ -18,6 +18,7 @@ from ..envelope import fail, success
 from ..models import (
     Cart,
     CartItem,
+    ExporterPlan,
     FavouriteProduct,
     ImporterPlan,
     Order,
@@ -381,15 +382,31 @@ def create_order(
         delivery = {"raw": delivery_info}
 
     subtotal = sum(float(i.subtotal) for i in cart.items)
-    platform_fee = round(subtotal * 0.02, 2)
     logistics_fee = round(subtotal * 0.05, 2) if logistic_id else 0.0
-    total = subtotal + platform_fee + logistics_fee
 
     # All items in this MVP belong to one exporter; pick the first
     exporter_id = None
     if cart.items:
         first_prod = db.get(Product, cart.items[0].product_id)
         exporter_id = first_prod.exporter_id if first_prod else None
+
+    # Commission rate follows the SELLER's plan, not a hard-coded 2%.
+    # Premium sellers pay 1.5%; Free sellers pay 2%. Falls back to 2% if the
+    # seller can't be resolved (defensive - the loop above should always find
+    # a seller because we already validated the cart isn't empty).
+    commission_pct = 2.0
+    if exporter_id:
+        seller = db.get(User, exporter_id)
+        if seller is not None:
+            plan: Optional[ExporterPlan] = None
+            if seller.plan_id:
+                plan = db.get(ExporterPlan, seller.plan_id)
+            if plan is None:
+                plan = db.query(ExporterPlan).filter(ExporterPlan.is_default == 1).first()
+            if plan is not None and plan.commission_percent is not None:
+                commission_pct = float(plan.commission_percent)
+    platform_fee = round(subtotal * commission_pct / 100.0, 2)
+    total = subtotal + platform_fee + logistics_fee
 
     # Predictable order number: JT + first 3 of the buyer id + first 3 of the
     # seller id + 2-digit day of the month. A "-N" counter is appended only
