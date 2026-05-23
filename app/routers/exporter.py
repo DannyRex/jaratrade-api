@@ -14,7 +14,7 @@ from ..constants import ROLE_ADMIN
 from ..database import get_db
 from ..deps import require_exporter
 from ..envelope import fail, success
-from ..models import Bank, Order, OrderItem, Product, Store, User
+from ..models import Bank, ExporterPlan, Order, OrderItem, Product, Store, User
 from ..models.user import BusinessProfile
 from ..routers.public import _serialize_product_summary
 from ..security import hash_password, verify_password
@@ -28,6 +28,31 @@ from ..services.email import (
 from ..services.flutterwave import resolve_account
 
 router = APIRouter(prefix="/exp", tags=["exporter"])
+
+
+# ── Plan-tier enforcement helpers ──────────────────────────────────────────
+# Premium tier promises "Unlimited" stores / market locations / product
+# listings; the Free tier caps them. Without these guards a Free user could
+# call /exp/store and /exp/product without limit, which both invalidates the
+# Premium upgrade pitch and lets the marketplace fill with Free-tier spam.
+#
+# A plan limit of `-1` means unlimited; anything `>= 0` is a hard cap.
+
+def _active_exporter_plan(db: Session, user: User) -> Optional[ExporterPlan]:
+    """Resolve the plan this seller is currently subject to.
+
+    Falls back to the seeded default (Free) plan when `user.plan_id` is null,
+    which is the state every brand-new exporter is in. Returns None only when
+    no Free plan has been seeded at all (shouldn't happen in prod). Callers
+    treat None as "no enforcement" - we fail open rather than block legitimate
+    sellers if the seed is corrupt; the missing plan row would be obvious in
+    the admin UI through other channels.
+    """
+    if user.plan_id:
+        plan = db.get(ExporterPlan, user.plan_id)
+        if plan is not None:
+            return plan
+    return db.query(ExporterPlan).filter(ExporterPlan.is_default == 1).first()
 
 
 # ───────────────────────── Profile ─────────────────────────
@@ -433,6 +458,32 @@ def create_store(
     market_id: str = Form(...),
     address: str = Form(...),
 ):
+    # Plan-tier ceilings on stores + distinct markets. `max_market` counts
+    # the number of unique markets the seller operates in (not stores), so
+    # opening a second store in the SAME market is fine on Free but adding
+    # a store in a NEW market trips the cap.
+    plan = _active_exporter_plan(db, user)
+    if plan is not None:
+        existing_stores = db.query(Store).filter(Store.exporter_id == user.id).all()
+        if plan.max_store >= 0 and len(existing_stores) >= plan.max_store:
+            raise fail(
+                f"Your {plan.title} plan allows up to {plan.max_store} "
+                f"{'store' if plan.max_store == 1 else 'stores'}. "
+                f"Upgrade to add more.",
+                code=403,
+            )
+        if plan.max_market >= 0:
+            existing_markets = {s.market_id for s in existing_stores}
+            adding_new_market = market_id not in existing_markets
+            if adding_new_market and len(existing_markets) >= plan.max_market:
+                raise fail(
+                    f"Your {plan.title} plan allows stores in up to "
+                    f"{plan.max_market} market "
+                    f"{'location' if plan.max_market == 1 else 'locations'}. "
+                    f"Upgrade to expand to another market.",
+                    code=403,
+                )
+
     store = Store(exporter_id=user.id, market_id=market_id, address=address)
     db.add(store)
     db.commit()
@@ -490,6 +541,20 @@ def create_product(
     store = db.get(Store, store_id)
     if not store or store.exporter_id != user.id:
         raise fail("Store does not belong to you", code=403)
+
+    # Plan-tier ceiling on total listings. `max_product` is the cap across
+    # ALL the seller's stores, not per-store.
+    plan = _active_exporter_plan(db, user)
+    if plan is not None and plan.max_product >= 0:
+        listing_count = db.query(Product).filter(Product.exporter_id == user.id).count()
+        if listing_count >= plan.max_product:
+            raise fail(
+                f"Your {plan.title} plan allows up to {plan.max_product} "
+                f"product {'listing' if plan.max_product == 1 else 'listings'}. "
+                f"Upgrade to list more.",
+                code=403,
+            )
+
     prod = Product(
         exporter_id=user.id,
         store_id=store_id,
