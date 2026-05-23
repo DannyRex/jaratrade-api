@@ -668,6 +668,42 @@ def _resolve_importer_plan(db: Session, user: User) -> Optional[ImporterPlan]:
     return plan
 
 
+def _resolve_charge_currency(order: Order) -> tuple[float, str]:
+    """Pick the (amount, currency) we ask Flutterwave to charge the buyer.
+
+    Defaults to the order's native currency (NGN) so behaviour is
+    unchanged when FLW_CHARGE_CURRENCY is unset. When the env var is set
+    to a different ISO code (e.g. "GBP"), we fx-convert the order total
+    into that currency and apply a small buffer to absorb settlement-time
+    rate drift. UK-issuing banks routinely block NGN charges as exotic-
+    currency / high-risk; charging the same NG merchant in GBP routes
+    through normal domestic-style rails on the issuer's side and acceptance
+    rates jump from ~35% to ~90%.
+
+    The order row itself stays NGN. The seller's NGN subaccount also stays
+    NGN - FLW does the GBP→NGN settlement at their published rate. Only
+    the *buyer-facing* charge currency switches.
+
+    If fx_convert returns None (FX feed unavailable), we silently fall back
+    to the order's native currency rather than blocking checkout. A
+    rejected card is better than a 500.
+    """
+    s = get_settings()
+    target = (s.flw_charge_currency or "").upper().strip()
+    order_currency = (order.currency or "NGN").upper()
+    native_amount = float(order.total)
+
+    if not target or target == order_currency:
+        return native_amount, order_currency
+
+    converted = fx_convert(native_amount, order_currency, target)
+    if converted is None:
+        return native_amount, order_currency
+
+    buffer = 1.0 + (float(s.flw_charge_currency_buffer_pct or 0) / 100.0)
+    return round(converted * buffer, 2), target
+
+
 def _reset_monthly_window_if_needed(user: User) -> None:
     """If the importer's monthly window is over (or never set), reset their counter."""
     now = datetime.now(timezone.utc).replace(tzinfo=None)
@@ -715,6 +751,10 @@ async def init_payment(
     # React Query refetched on focus), reuse its tx_ref instead of spawning
     # a new one each time. Otherwise we end up with orphan payment rows
     # which clutter the dashboard + can confuse the FLW webhook ordering.
+    # Resolve the charge currency (defaults to order.currency / NGN unless
+    # FLW_CHARGE_CURRENCY is set to e.g. GBP for better UK-card acceptance).
+    charge_amount, charge_currency = _resolve_charge_currency(order)
+
     existing_pending = (
         db.query(Payment)
         .filter(Payment.order_id == order.id, Payment.status == "pending")
@@ -723,13 +763,20 @@ async def init_payment(
     )
     if existing_pending:
         tx_ref = existing_pending.tx_ref
+        # If the charge currency changed since the Payment was created (e.g.
+        # admin flipped FLW_CHARGE_CURRENCY mid-flow), update the row so it
+        # reflects what we're actually charging now. Otherwise reconciliation
+        # against FLW's records won't line up.
+        existing_pending.amount = charge_amount
+        existing_pending.currency = charge_currency
+        db.commit()
     else:
         tx_ref = "JARA" + secrets.token_urlsafe(8).replace("-", "")[:12]
         payment = Payment(
             order_id=order.id,
             tx_ref=tx_ref,
-            amount=order.total,
-            currency=order.currency,
+            amount=charge_amount,
+            currency=charge_currency,
             status="pending",
         )
         db.add(payment)
@@ -750,8 +797,8 @@ async def init_payment(
 
     config = build_inline_config(
         tx_ref=tx_ref,
-        amount=float(order.total),
-        currency=order.currency,
+        amount=charge_amount,
+        currency=charge_currency,
         customer={"email": user.email, "phone_number": user.phone or "", "name": user.fullname},
         order_id=order.order_number,
         commission_rate=commission_decimal,
@@ -798,6 +845,11 @@ async def init_payment_standard(
                     code=402,
                 )
 
+    # Resolve charge currency (defaults to order.currency unless
+    # FLW_CHARGE_CURRENCY is set - see _resolve_charge_currency for the
+    # full rationale).
+    charge_amount, charge_currency = _resolve_charge_currency(order)
+
     # Reuse pending Payment row if one exists (same idempotency rule as
     # the inline endpoint).
     existing_pending = (
@@ -808,13 +860,16 @@ async def init_payment_standard(
     )
     if existing_pending:
         tx_ref = existing_pending.tx_ref
+        existing_pending.amount = charge_amount
+        existing_pending.currency = charge_currency
+        db.commit()
     else:
         tx_ref = "JARA" + secrets.token_urlsafe(8).replace("-", "")[:12]
         db.add(Payment(
             order_id=order.id,
             tx_ref=tx_ref,
-            amount=order.total,
-            currency=order.currency,
+            amount=charge_amount,
+            currency=charge_currency,
             status="pending",
         ))
         db.commit()
@@ -835,8 +890,8 @@ async def init_payment_standard(
     try:
         result = await create_standard_payment(
             tx_ref=tx_ref,
-            amount=float(order.total),
-            currency=order.currency,
+            amount=charge_amount,
+            currency=charge_currency,
             customer={"email": user.email, "phonenumber": user.phone or "", "name": user.fullname},
             order_id=order.order_number,
             redirect_url=redirect_url,

@@ -54,6 +54,17 @@ class Settings(BaseSettings):
     # Set to the same string you put in Flutterwave's dashboard under
     # Settings -> Webhooks. Leave empty in dev to disable signature checks.
     flw_webhook_secret: str = Field(default="")
+    # Currency to denominate the FLW charge in. Leave empty to charge in the
+    # order's native currency (NGN). Set to "GBP" to convert and charge in
+    # GBP - UK-issuing banks frequently reject NGN charges as exotic-
+    # currency / high-risk, but accept the same merchant in GBP. Seller's
+    # NGN subaccount still receives NGN at FLW's settlement rate; only the
+    # buyer-facing charge currency changes.
+    flw_charge_currency: str = Field(default="")
+    # Percentage buffer added to the FX-converted amount so settlement-time
+    # rate drift can't leave the seller short. 1% is conservative; raise to
+    # 2-3% in volatile FX windows.
+    flw_charge_currency_buffer_pct: float = Field(default=1.0)
 
     # Email (transactional). Not required for dev.
     smtp_host: str = Field(default="")
