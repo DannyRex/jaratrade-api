@@ -462,14 +462,19 @@ def create_store(
     # the number of unique markets the seller operates in (not stores), so
     # opening a second store in the SAME market is fine on Free but adding
     # a store in a NEW market trips the cap.
+    #
+    # Error messages include the actual current count - sellers reach out
+    # confused when their UI shows 1 store but the DB has accumulated more
+    # from earlier testing, so we surface the real number explicitly.
     plan = _active_exporter_plan(db, user)
     if plan is not None:
         existing_stores = db.query(Store).filter(Store.exporter_id == user.id).all()
-        if plan.max_store >= 0 and len(existing_stores) >= plan.max_store:
+        store_count = len(existing_stores)
+        if plan.max_store >= 0 and store_count >= plan.max_store:
             raise fail(
                 f"Your {plan.title} plan allows up to {plan.max_store} "
-                f"{'store' if plan.max_store == 1 else 'stores'}. "
-                f"Upgrade to add more.",
+                f"{'store' if plan.max_store == 1 else 'stores'} - "
+                f"you already have {store_count}. Upgrade to add more.",
                 code=403,
             )
         if plan.max_market >= 0:
@@ -479,7 +484,8 @@ def create_store(
                 raise fail(
                     f"Your {plan.title} plan allows stores in up to "
                     f"{plan.max_market} market "
-                    f"{'location' if plan.max_market == 1 else 'locations'}. "
+                    f"{'location' if plan.max_market == 1 else 'locations'} - "
+                    f"you already operate in {len(existing_markets)}. "
                     f"Upgrade to expand to another market.",
                     code=403,
                 )
@@ -543,15 +549,17 @@ def create_product(
         raise fail("Store does not belong to you", code=403)
 
     # Plan-tier ceiling on total listings. `max_product` is the cap across
-    # ALL the seller's stores, not per-store.
+    # ALL the seller's stores, not per-store. Surface the current count in
+    # the error message so the seller knows why we're rejecting (helpful
+    # when the UI display drifts from the DB total).
     plan = _active_exporter_plan(db, user)
     if plan is not None and plan.max_product >= 0:
         listing_count = db.query(Product).filter(Product.exporter_id == user.id).count()
         if listing_count >= plan.max_product:
             raise fail(
                 f"Your {plan.title} plan allows up to {plan.max_product} "
-                f"product {'listing' if plan.max_product == 1 else 'listings'}. "
-                f"Upgrade to list more.",
+                f"product {'listing' if plan.max_product == 1 else 'listings'} - "
+                f"you already have {listing_count}. Upgrade to list more.",
                 code=403,
             )
 
