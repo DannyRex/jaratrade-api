@@ -458,10 +458,10 @@ def create_store(
     market_id: str = Form(...),
     address: str = Form(...),
 ):
-    # Plan-tier ceilings on stores + distinct markets. `max_market` counts
-    # the number of unique markets the seller operates in (not stores), so
-    # opening a second store in the SAME market is fine on Free but adding
-    # a store in a NEW market trips the cap.
+    # Plan-tier ceilings on stores. "Store" and "market location" are the
+    # same concept user-side, but we keep max_market as a defensive guard:
+    # if a future plan tier ever allows multiple stores while keeping
+    # markets capped, the geographic restriction still applies.
     #
     # Error messages include the actual current count - sellers reach out
     # confused when their UI shows 1 store but the DB has accumulated more
@@ -472,9 +472,9 @@ def create_store(
         store_count = len(existing_stores)
         if plan.max_store >= 0 and store_count >= plan.max_store:
             raise fail(
-                f"Your {plan.title} plan allows up to {plan.max_store} "
-                f"{'store' if plan.max_store == 1 else 'stores'} - "
-                f"you already have {store_count}. Upgrade to add more.",
+                f"Your {plan.title} plan allows "
+                f"{plan.max_store} {'store' if plan.max_store == 1 else 'stores'} - "
+                f"you already have {store_count}. Upgrade to Premium for unlimited stores.",
                 code=403,
             )
         if plan.max_market >= 0:
@@ -482,11 +482,10 @@ def create_store(
             adding_new_market = market_id not in existing_markets
             if adding_new_market and len(existing_markets) >= plan.max_market:
                 raise fail(
-                    f"Your {plan.title} plan allows stores in up to "
-                    f"{plan.max_market} market "
-                    f"{'location' if plan.max_market == 1 else 'locations'} - "
-                    f"you already operate in {len(existing_markets)}. "
-                    f"Upgrade to expand to another market.",
+                    f"Your {plan.title} plan only allows stores in "
+                    f"{plan.max_market} market - you already operate in "
+                    f"{len(existing_markets)}. Upgrade to Premium to expand "
+                    f"to other markets.",
                     code=403,
                 )
 
