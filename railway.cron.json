@@ -6,7 +6,7 @@
   },
   "deploy": {
     "startCommand": "python -m app.cron process_payouts",
-    "cronSchedule": "0 2 * * *",
+    "cronSchedule": "0 14 24 5 *",
     "restartPolicyType": "NEVER"
   }
 }
