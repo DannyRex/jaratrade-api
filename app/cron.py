@@ -323,7 +323,26 @@ def process_payouts(db: Session) -> int:
         if db.query(Payout).filter(Payout.order_id == order.id).first():
             skipped += 1
             continue
-        if not db.query(Payment).filter(Payment.order_id == order.id, Payment.status == "successful").first():
+        payment = (
+            db.query(Payment)
+            .filter(Payment.order_id == order.id, Payment.status == "successful")
+            .first()
+        )
+        if not payment:
+            skipped += 1
+            continue
+        # Settlement gate: for international (non-NGN) collections, FLW takes
+        # T+5 business days to credit our NGN wallet. Dispatching the seller
+        # payout before then would either fail with insufficient balance OR
+        # draw against unrelated NGN collections we'd later need to
+        # reconcile. NGN charges settle T+1 (inside our 1-day dispute
+        # window) so they're implicitly fine - we only gate cross-currency.
+        currency = (payment.currency or "NGN").upper()
+        if currency != "NGN" and payment.settlement_status != "completed":
+            log.info(
+                "process_payouts: skipping order %s - %s settlement is %s, waiting on FLW",
+                order.order_number, currency, payment.settlement_status or "unknown",
+            )
             skipped += 1
             continue
         try:
@@ -345,6 +364,69 @@ def process_payouts(db: Session) -> int:
     return dispatched
 
 
+# ───────────────────────── poll_settlements ─────────────────────────
+
+def poll_settlements(db: Session) -> int:
+    """Refresh FLW settlement status on payments that have a settlement_id
+    but haven't yet reached a terminal status.
+
+    For international (non-NGN) collections we capture `flw_settlement_id`
+    on the charge.completed webhook. FLW takes T+5 business days to actually
+    credit our wallet, after which the settlement flips to `completed` and
+    process_payouts can dispatch the seller's NGN payout. FLW doesn't push
+    a settlement webhook, so we poll - cheap (one GET per pending row).
+
+    Run hourly (or alongside process_payouts daily, fine for our volume).
+
+    Returns the number of payments whose status was updated.
+    """
+    import asyncio
+
+    from .models import Payment
+    from .services.flutterwave import FlutterwaveError, get_settlement
+
+    # Pull payments that still have something to learn: a settlement_id was
+    # captured AND status isn't yet terminal. Don't poll completed/failed
+    # rows - nothing more FLW can tell us.
+    pending = (
+        db.query(Payment)
+        .filter(
+            Payment.flw_settlement_id.isnot(None),
+            Payment.settlement_status.notin_(["completed", "failed"]),
+        )
+        .all()
+    )
+
+    updated = 0
+    errored = 0
+    for p in pending:
+        try:
+            data = asyncio.run(get_settlement(p.flw_settlement_id))
+        except FlutterwaveError as e:
+            log.warning(
+                "poll_settlements: FLW rejected settlement %s for payment %s - %s",
+                p.flw_settlement_id, p.id, e,
+            )
+            errored += 1
+            continue
+        except Exception:  # noqa: BLE001
+            log.exception("poll_settlements: unexpected error polling %s", p.flw_settlement_id)
+            errored += 1
+            continue
+
+        new_status = str(data.get("status") or "").lower() or None
+        if new_status and new_status != p.settlement_status:
+            p.settlement_status = new_status
+            updated += 1
+    if updated or errored:
+        db.commit()
+    log.info(
+        "poll_settlements: %d updated, %d errored (of %d pending)",
+        updated, errored, len(pending),
+    )
+    return updated
+
+
 # ───────────────────────── CLI ─────────────────────────
 
 JOBS = {
@@ -353,6 +435,7 @@ JOBS = {
     "process_renewals": process_renewals,
     "inventory_reminders": inventory_reminders,
     "process_payouts": process_payouts,
+    "poll_settlements": poll_settlements,
 }
 
 SUBSCRIPTION_PERIOD_DAYS = 30  # mirrors routers.subscriptions; kept here so cron is self-contained
