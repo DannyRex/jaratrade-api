@@ -52,6 +52,31 @@ def _verify_signature(provided: Optional[str]) -> bool:
     return bool(provided) and provided == expected
 
 
+def _parse_flw_datetime(value: str) -> Optional["datetime"]:
+    """Parse the datetime strings FLW sends in their webhook payloads.
+
+    Their format is loosely ISO-8601 but inconsistent across endpoints -
+    sometimes 'YYYY-MM-DDTHH:MM:SS.000Z', sometimes 'YYYY-MM-DD HH:MM:SS'
+    without a TZ marker. We normalise to naive UTC for storage.
+    """
+    from datetime import datetime as _dt
+    s = value.strip().replace("Z", "+00:00")
+    # Try with TZ first, then naive.
+    for fmt_attempt in (
+        lambda: _dt.fromisoformat(s),
+        lambda: _dt.fromisoformat(s.replace(" ", "T")),
+    ):
+        try:
+            dt = fmt_attempt()
+            if dt.tzinfo is not None:
+                from datetime import timezone as _tz
+                dt = dt.astimezone(_tz.utc).replace(tzinfo=None)
+            return dt
+        except (ValueError, TypeError):
+            continue
+    return None
+
+
 def _serialise_for_audit(data: Dict[str, Any]) -> str:
     try:
         return json.dumps(data)[:8000]  # keep audit blob bounded
@@ -78,6 +103,26 @@ def _handle_charge(event_data: Dict[str, Any], db: Session) -> Dict[str, Any]:
         if order and order.status == "pending":
             order.status = "paid"
             just_paid = True
+
+        # Capture FLW's settlement reference + due date if present in the
+        # event. For NGN charges these may be null in the immediate
+        # charge.completed payload (settlement is implicit T+1); for
+        # international GBP/USD charges FLW typically populates them so
+        # we can gate the seller payout on settlement completion (T+5).
+        settlement_id = event_data.get("settlement_id") or event_data.get("settlement", {}).get("id") if isinstance(event_data.get("settlement"), dict) else event_data.get("settlement_id")
+        if settlement_id:
+            payment.flw_settlement_id = str(settlement_id)
+            payment.settlement_status = "pending"  # we'll poll for updates
+        due = event_data.get("due_datetime") or (
+            event_data.get("settlement", {}).get("due_datetime")
+            if isinstance(event_data.get("settlement"), dict) else None
+        )
+        if due:
+            try:
+                # FLW sends ISO-8601 with timezone; normalise to naive UTC.
+                payment.settlement_due_at = _parse_flw_datetime(due)
+            except Exception:  # noqa: BLE001
+                pass
     elif status in ("failed", "cancelled"):
         payment.status = "failed"
     payment.provider_payload = _serialise_for_audit(event_data)

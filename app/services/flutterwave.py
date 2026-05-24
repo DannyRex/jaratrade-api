@@ -452,6 +452,42 @@ async def transfer_to_bank(
     return await _flw_post("/v3/transfers", payload)
 
 
+async def get_settlement(settlement_id: str) -> Dict[str, Any]:
+    """Pull settlement status from Flutterwave.
+
+    Returns the `data` block from GET /v3/settlements/:id - notable fields:
+      - status: pending | processing | approved | completed | failed
+      - due_datetime: when FLW expects the credit to land
+      - amount, currency, charge_amount, charge_currency: post-FX figures
+
+    Used by the poll_settlements cron to know when an international (T+5)
+    collection has actually credited our wallet so the payout cron can
+    release the seller's NGN funds.
+
+    Raises FlutterwaveError on non-2xx so callers can distinguish "not
+    yet credited" (200, status=pending) from "FLW returned an error".
+    """
+    if not settings.flw_secret_key:
+        return {
+            "id": settlement_id,
+            "status": "completed",
+            "_dev_fallback": True,
+        }
+    headers = {"Authorization": f"Bearer {settings.flw_secret_key}"}
+    async with httpx.AsyncClient(timeout=15.0, headers=headers) as client:
+        resp = await client.get(
+            f"https://api.flutterwave.com/v3/settlements/{settlement_id}",
+            headers=headers,
+        )
+        if resp.status_code >= 400:
+            try:
+                body = resp.json()
+            except Exception:  # noqa: BLE001
+                body = resp.text
+            raise FlutterwaveError(resp.status_code, body)
+        return resp.json().get("data") or {}
+
+
 async def refund_payment(*, flw_transaction_id: str, amount: Optional[float] = None) -> Dict[str, Any]:
     """Issue a (full or partial) refund on a previously-successful charge.
 

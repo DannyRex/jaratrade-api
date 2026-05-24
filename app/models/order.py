@@ -63,6 +63,22 @@ class Payment(Base, TimestampMixin):
     provider: Mapped[str] = mapped_column(String(40), default="flutterwave")
     provider_payload: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
 
+    # FLW settlement tracking. For international (non-NGN) collections FLW
+    # takes T+5 business days to credit the funds to our NGN wallet, so we
+    # can't dispatch the seller payout until settlement completes. NGN
+    # collections settle T+1 which is well inside our 1-day dispute window,
+    # so these columns stay null for them.
+    #
+    # flw_settlement_id: captured on the charge.completed webhook from FLW's
+    #   transaction data (`data.settlement_id`).
+    # settlement_due_at: when FLW expects to credit our wallet (from
+    #   `data.due_datetime` on /v3/settlements/:id).
+    # settlement_status: mirror of FLW's settlement status -
+    #   pending / processing / approved / completed / failed.
+    flw_settlement_id: Mapped[Optional[str]] = mapped_column(String(64), nullable=True, index=True)
+    settlement_due_at: Mapped[Optional["datetime"]] = mapped_column(DateTime, nullable=True)
+    settlement_status: Mapped[Optional[str]] = mapped_column(String(20), nullable=True)
+
     order: Mapped["Order"] = relationship("Order", back_populates="payments")
 
 
