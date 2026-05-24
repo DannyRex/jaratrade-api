@@ -668,6 +668,43 @@ def _resolve_importer_plan(db: Session, user: User) -> Optional[ImporterPlan]:
     return plan
 
 
+# Countries known to not support FLW's bank-transfer / USSD rails. For these
+# buyers we narrow payment_options to card only so the hosted checkout doesn't
+# render unusable tabs (e.g. UK buyers can't transfer to a Nigerian MFB
+# virtual account via LeMFI/Wise/Sendwave - the rails just aren't there).
+_CARD_ONLY_COUNTRIES = {
+    "UK", "GB", "GBR",
+    "UNITED KINGDOM", "GREAT BRITAIN", "ENGLAND", "SCOTLAND", "WALES",
+    "NORTHERN IRELAND",
+}
+
+
+def _payment_options_for_buyer(buyer: User, order: Order) -> str:
+    """Return the comma-separated payment_options string to pass to FLW.
+
+    Defaults to all rails (card + bank transfer + USSD). UK / non-NG buyers
+    get card-only because FLW's bank-transfer path provisions a Nigerian
+    Microfinance Bank virtual account that UK remittance services can't
+    target - showing them a 'bank transfer' tab they can't actually use
+    is worse UX than hiding it.
+
+    Buyer country comes from the order's delivery_info first (most
+    relevant - 'where is this order shipping to'), falling back to the
+    user's registered country.
+    """
+    country = ""
+    try:
+        delivery = json.loads(order.delivery_info or "{}")
+        country = (delivery.get("country") or "").strip().upper()
+    except (TypeError, ValueError):
+        country = ""
+    if not country and buyer.country:
+        country = buyer.country.strip().upper()
+    if country in _CARD_ONLY_COUNTRIES:
+        return "card"
+    return "card,banktransfer,ussd"
+
+
 def _resolve_pending_tx_ref(
     db: Session,
     order: Order,
@@ -829,6 +866,7 @@ async def init_payment(
         commission_rate=commission_decimal,
         commission_subaccount_id=commission_sub,
         seller_subaccount_id=seller_sub,
+        payment_options=_payment_options_for_buyer(user, order),
     )
     return success(config)
 
@@ -901,6 +939,7 @@ async def init_payment_standard(
             commission_rate=commission_decimal,
             commission_subaccount_id=commission_sub,
             seller_subaccount_id=seller_sub,
+            payment_options=_payment_options_for_buyer(user, order),
         )
     except FlutterwaveError as e:
         raise fail(
