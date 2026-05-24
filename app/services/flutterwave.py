@@ -19,6 +19,9 @@ from ..config import get_settings
 settings = get_settings()
 
 
+_DEFAULT_PAYMENT_OPTIONS = "card,banktransfer,ussd"
+
+
 def build_inline_config(
     *,
     tx_ref: str,
@@ -29,6 +32,7 @@ def build_inline_config(
     commission_rate: Optional[float] = None,
     commission_subaccount_id: Optional[str] = None,
     seller_subaccount_id: Optional[str] = None,
+    payment_options: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Build the Flutterwave Inline-checkout config.
 
@@ -78,7 +82,7 @@ def build_inline_config(
         "tx_ref": tx_ref,
         "amount": f"{amount:.2f}",
         "currency": currency,
-        "payment_options": "card,banktransfer,ussd",
+        "payment_options": payment_options or _DEFAULT_PAYMENT_OPTIONS,
         "customer": customer,
         "customizations": {
             "title": "Jaratrade",
@@ -101,6 +105,7 @@ async def create_standard_payment(
     commission_rate: Optional[float] = None,
     commission_subaccount_id: Optional[str] = None,
     seller_subaccount_id: Optional[str] = None,
+    payment_options: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Create a Flutterwave Standard hosted-checkout session.
 
@@ -134,7 +139,7 @@ async def create_standard_payment(
         "amount": f"{amount:.2f}",
         "currency": currency,
         "redirect_url": redirect_url,
-        "payment_options": "card,banktransfer,ussd",
+        "payment_options": payment_options or _DEFAULT_PAYMENT_OPTIONS,
         "customer": customer,
         "customizations": {
             "title": "Jaratrade",
