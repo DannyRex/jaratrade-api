@@ -5,8 +5,8 @@
     "dockerfilePath": "Dockerfile"
   },
   "deploy": {
-    "startCommand": "python -m app.cron poll_settlements && python -m app.cron process_payouts",
-    "cronSchedule": "0 2 * * *",
+    "startCommand": "python -m app.cron poll_settlements",
+    "cronSchedule": "0 * * * *",
     "restartPolicyType": "NEVER"
   }
 }
