@@ -309,24 +309,46 @@ def remove_or_clear(
 
 
 def _serialize_cart(cart: Cart, db: Session) -> dict:
+    # Late-bound import: _secondary_price_block lives in routers.public next
+    # to the product serializer that already uses it. Importing at module
+    # top causes a circular reference (public imports our helpers too).
+    from ..routers.public import _secondary_price_block
+
     items = []
     for item in cart.items:
         prod = db.get(Product, item.product_id)
+        item_currency = (prod.currency if prod else "NGN") or "NGN"
+        unit_secondary = _secondary_price_block(float(item.unit_price), item_currency, db)
+        subtotal_secondary = _secondary_price_block(float(item.subtotal), item_currency, db)
         items.append({
             "id": item.id,
             "product_id": item.product_id,
             "name": prod.product_name if prod else "Unknown",
             "category": "",
             "price": f"{float(item.unit_price):.2f}",
+            "currency": item_currency,
             "quantity": item.quantity,
             "unit": item.unit,
             "subtotal": f"{float(item.subtotal):.2f}",
+            # Dual-currency: GBP equivalents so the cart respects the buyer's
+            # preferred currency the same way product cards do.
+            "secondary_currency": unit_secondary["secondary_currency"],
+            "secondary_amount": unit_secondary["secondary_amount"],
+            "subtotal_secondary_amount": subtotal_secondary["secondary_amount"],
         })
+    total = sum(float(i.subtotal) for i in cart.items)
+    # Cart-level total in the dominant item currency (NGN for our marketplace).
+    # If items are mixed-currency, we still compute against NGN since that's
+    # how the order will be denominated. Edge case unlikely in practice.
+    total_secondary = _secondary_price_block(total, "NGN", db)
     return {
         "id": cart.id,
         "status": cart.status,
         "items": items,
-        "total": f"{sum(float(i.subtotal) for i in cart.items):.2f}",
+        "total": f"{total:.2f}",
+        "currency": "NGN",
+        "secondary_currency": total_secondary["secondary_currency"],
+        "secondary_amount": total_secondary["secondary_amount"],
         "time_created": cart.time_created.isoformat(),
     }
 
@@ -528,7 +550,7 @@ def _send_order_confirmation_emails(db: Session, order: Order, buyer: User) -> N
 @router.get("/order")
 def list_orders(user: User = Depends(require_importer), db: Session = Depends(get_db)):
     orders = db.query(Order).filter(Order.importer_id == user.id).order_by(desc(Order.time_created)).all()
-    rows = [_serialize_order(o) for o in orders]
+    rows = [_serialize_order(o, db=db) for o in orders]
     return success({"data": rows, "meta": {"paging": {"total": len(rows), "page": 1, "len": len(rows)}}})
 
 
@@ -537,7 +559,7 @@ def get_order(order_id: str, user: User = Depends(require_importer), db: Session
     order = db.get(Order, order_id)
     if not order or order.importer_id != user.id:
         raise fail("Order not found", code=404)
-    return success(_serialize_order(order, include_items=True))
+    return success(_serialize_order(order, include_items=True, db=db))
 
 
 @router.delete("/order/{order_id}")
@@ -624,7 +646,22 @@ def confirm_receipt(
     })
 
 
-def _serialize_order(o: Order, *, include_items: bool = False) -> dict:
+def _serialize_order(o: Order, *, include_items: bool = False, db: Optional[Session] = None) -> dict:
+    # Optional db lets us attach GBP-equivalent figures so the buyer's
+    # currency-preference toggle works on order rows the same way it works
+    # on product cards. If db is None (older callers), we skip the FX work
+    # gracefully - the field is just absent, frontend treats it as no
+    # secondary available.
+    secondary_total = {"secondary_currency": None, "secondary_amount": None}
+    secondary_platform = {"secondary_currency": None, "secondary_amount": None}
+    secondary_logistics = {"secondary_currency": None, "secondary_amount": None}
+    if db is not None:
+        from ..routers.public import _secondary_price_block
+        ccy = o.currency or "NGN"
+        secondary_total = _secondary_price_block(float(o.total), ccy, db)
+        secondary_platform = _secondary_price_block(float(o.platform_fee or 0), ccy, db)
+        secondary_logistics = _secondary_price_block(float(o.logistics_fee or 0), ccy, db)
+
     out = {
         "id": o.id,
         "order_id": o.order_number,
@@ -634,6 +671,10 @@ def _serialize_order(o: Order, *, include_items: bool = False) -> dict:
         "platform_fee": f"{float(o.platform_fee):.2f}",
         "logistics_fee": f"{float(o.logistics_fee):.2f}",
         "currency": o.currency,
+        "secondary_currency": secondary_total["secondary_currency"],
+        "secondary_amount": secondary_total["secondary_amount"],
+        "platform_fee_secondary_amount": secondary_platform["secondary_amount"],
+        "logistics_fee_secondary_amount": secondary_logistics["secondary_amount"],
         "status": o.status,
         "shipping_method": o.shipping_mode,
         "logistics_id": o.logistics_id,
@@ -645,14 +686,29 @@ def _serialize_order(o: Order, *, include_items: bool = False) -> dict:
         ),
     }
     if include_items:
-        out["items"] = [{
-            "id": it.id,
-            "product_id": it.product_id,
-            "product_name": it.product_name,
-            "quantity": it.quantity,
-            "unit_price": f"{float(it.unit_price):.2f}",
-            "subtotal": f"{float(it.subtotal):.2f}",
-        } for it in o.items]
+        items_out = []
+        for it in o.items:
+            unit_sec = (
+                _secondary_price_block(float(it.unit_price), o.currency or "NGN", db)
+                if db is not None else {"secondary_currency": None, "secondary_amount": None}
+            )
+            sub_sec = (
+                _secondary_price_block(float(it.subtotal), o.currency or "NGN", db)
+                if db is not None else {"secondary_currency": None, "secondary_amount": None}
+            )
+            items_out.append({
+                "id": it.id,
+                "product_id": it.product_id,
+                "product_name": it.product_name,
+                "quantity": it.quantity,
+                "unit_price": f"{float(it.unit_price):.2f}",
+                "subtotal": f"{float(it.subtotal):.2f}",
+                "currency": o.currency,
+                "secondary_currency": unit_sec["secondary_currency"],
+                "unit_price_secondary_amount": unit_sec["secondary_amount"],
+                "subtotal_secondary_amount": sub_sec["secondary_amount"],
+            })
+        out["items"] = items_out
     return out
 
 
@@ -1054,15 +1110,21 @@ def transaction_history(user: User = Depends(require_importer), db: Session = De
         .order_by(desc(Payment.time_created))
         .all()
     )
-    rows = [{
-        "id": p.id,
-        "tx_ref": p.tx_ref,
-        "order_id": p.order_id,
-        "amount": f"{float(p.amount):.2f}",
-        "currency": p.currency,
-        "status": p.status,
-        "time_created": p.time_created.isoformat(),
-    } for p in payments]
+    from ..routers.public import _secondary_price_block
+    rows = []
+    for p in payments:
+        sec = _secondary_price_block(float(p.amount), p.currency or "NGN", db)
+        rows.append({
+            "id": p.id,
+            "tx_ref": p.tx_ref,
+            "order_id": p.order_id,
+            "amount": f"{float(p.amount):.2f}",
+            "currency": p.currency,
+            "secondary_currency": sec["secondary_currency"],
+            "secondary_amount": sec["secondary_amount"],
+            "status": p.status,
+            "time_created": p.time_created.isoformat(),
+        })
     return success({"data": rows, "meta": {"paging": {"total": len(rows), "page": 1, "len": len(rows)}}})
 
 
