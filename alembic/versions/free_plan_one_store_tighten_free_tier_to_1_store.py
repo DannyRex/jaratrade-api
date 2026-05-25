@@ -34,13 +34,16 @@ depends_on: Union[str, Sequence[str], None] = None
 
 
 def upgrade() -> None:
+    # NB: keep the SQL string literal inline. SQLite does NOT support
+    # SQL adjacent-string-literal concatenation, so splitting the
+    # description across two quoted literals breaks CI even though
+    # Postgres (prod) tolerates it.
     op.execute(
         sa.text(
             """
             UPDATE exporter_plans
             SET max_store = 1,
-                description = '1 store and up to 5 product listings. '
-                              '2% commission per transaction.'
+                description = '1 store and up to 5 product listings. 2% commission per transaction.'
             WHERE is_default = 1
               AND max_store = 2
             """
@@ -54,8 +57,7 @@ def downgrade() -> None:
             """
             UPDATE exporter_plans
             SET max_store = 2,
-                description = 'Up to 2 stores and 5 product listings. '
-                              '2% commission per transaction.'
+                description = 'Up to 2 stores and 5 product listings. 2% commission per transaction.'
             WHERE is_default = 1
               AND max_store = 1
             """
